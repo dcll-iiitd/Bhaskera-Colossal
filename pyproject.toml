@@ -6,6 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "bhaskera"
 version = "0.1.0"
 requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
 
 [project.scripts]
 bhaskera = "bhaskera.cli:main"
