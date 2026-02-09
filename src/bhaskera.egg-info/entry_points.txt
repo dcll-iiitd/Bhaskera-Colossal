@@ -1,0 +1,2 @@
+[console_scripts]
+bhaskera = bhaskera.cli:main
