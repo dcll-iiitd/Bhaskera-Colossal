@@ -89,7 +89,7 @@ def main():
     trainer = TorchTrainer(
         train_loop_per_worker=train_func,
         scaling_config=ScalingConfig(
-            num_workers=4,
+            num_workers=1,
             use_gpu=True,
         ),
     )
