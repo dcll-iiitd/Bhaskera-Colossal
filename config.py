@@ -1,8 +1,8 @@
 # =========================
 # Model
 # =========================
-MODEL_NAME = "tiiuae/falcon-7b"
 
+MODEL_NAME = "tiiuae/falcon-7b"
 #MODEL_NAME = "mistralai/Mistral-7B-v0.1"
 ATTN_IMPL = "flash_attention_2"   # or None if unsupported
 
@@ -10,7 +10,7 @@ ATTN_IMPL = "flash_attention_2"   # or None if unsupported
 # Dataset
 # =========================
 
-DATASET_NAME = "redpajama"          #ultrachat 
+DATASET_NAME = "ultrachat"          #ultrachat 
 SEQ_LEN = 2048
 
 # =========================

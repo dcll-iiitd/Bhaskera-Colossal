@@ -32,11 +32,21 @@ class UltraChatStreamingDataset(IterableDataset):
             }
 
 
-def build_ultrachat(tokenizer, seq_len, rank, world_size):
+def build_ultrachat(cfg, tokenizer, rank, world_size):
+    """
+    Builds the UltraChat dataset.
+    Args:
+        cfg: The config module (contains SEQ_LEN)
+        tokenizer: The Hugging Face tokenizer object
+        rank: Global rank (for sharding)
+        world_size: Total workers (for sharding)
+    """
     raw = load_dataset(
         "HuggingFaceH4/ultrachat_200k",
         split="train_sft",
         streaming=True,
     )
     raw = shard_streaming_dataset(raw, rank, world_size)
-    return UltraChatStreamingDataset(raw, tokenizer, seq_len)
+    
+    # We now access SEQ_LEN from the passed cfg object [cite: 3]
+    return UltraChatStreamingDataset(raw, tokenizer, cfg.SEQ_LEN)
