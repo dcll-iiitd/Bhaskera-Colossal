@@ -22,6 +22,13 @@ class Config:
         for key, value in dictionary.items():
             if isinstance(value, dict):
                 value = Config(value)
+
+            # ---- Type normalization ----
+            if key in {"LR"}:
+                value = float(value)
+            if key in {"BATCH_SIZE", "GRAD_ACCUM", "MAX_STEPS", "SEQ_LEN"}:
+                value = int(value)
+
             setattr(self, key, value)
 
 
