@@ -1,5 +1,6 @@
 README.md
 pyproject.toml
+requirements.txt
 setup.py
 src/bhaskera/__init__.py
 src/bhaskera/cli.py
@@ -8,6 +9,7 @@ src/bhaskera.egg-info/PKG-INFO
 src/bhaskera.egg-info/SOURCES.txt
 src/bhaskera.egg-info/dependency_links.txt
 src/bhaskera.egg-info/entry_points.txt
+src/bhaskera.egg-info/requires.txt
 src/bhaskera.egg-info/top_level.txt
 src/bhaskera/data/__init__.py
 src/bhaskera/data/factory.py

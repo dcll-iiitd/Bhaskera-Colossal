@@ -1,19 +1,45 @@
+import argparse
+import yaml
 import torch
 import ray
+
+from types import SimpleNamespace
 from ray.train.torch import TorchTrainer
 from ray.train import ScalingConfig
-
 from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from bhaskera import config
 from bhaskera.data.registry import build_dataset
 from bhaskera.models.registry import build_model
 from bhaskera.trainer.train_loop import train
 
+# ==========================================================
+# Utility: Load YAML config
+# ==========================================================
+class Config:
+    def __init__(self, dictionary):
+        for key, value in dictionary.items():
+            if isinstance(value, dict):
+                value = Config(value)
+            setattr(self, key, value)
 
-def train_func(_):
+
+def load_config(path: str):
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    return Config(data)
+
+# def load_config(path: str):
+#     with open(path, "r") as f:
+#         data = yaml.safe_load(f)
+#     return SimpleNamespace(**data)
+
+
+# ==========================================================
+# Ray Worker Function
+# ==========================================================
+def train_func(config):
     ctx = ray.train.get_context()
 
     local_rank = ctx.get_local_rank()
@@ -47,7 +73,7 @@ def train_func(_):
     )
 
     # -----------------------
-    # Model (PEFT handled inside registry)
+    # Model
     # -----------------------
     model = build_model(config, device)
 
@@ -83,13 +109,41 @@ def train_func(_):
     )
 
 
+# ==========================================================
+# CLI Entry Point
+# ==========================================================
 def main():
+    parser = argparse.ArgumentParser(
+        description="Bhaskera Training Framework"
+    )
+
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,  # 🔥 THIS ENFORCES CONFIG
+        help="Path to YAML configuration file",
+    )
+
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of Ray workers (GPUs)",
+    )
+
+    args = parser.parse_args()
+
+    # Load config file
+    cfg = load_config(args.config)
+
+    # Initialize Ray
     ray.init()
 
     trainer = TorchTrainer(
         train_loop_per_worker=train_func,
+        train_loop_config=cfg,   # 🔥 Pass config to workers
         scaling_config=ScalingConfig(
-            num_workers=1,
+            num_workers=args.num_workers,
             use_gpu=True,
         ),
     )
