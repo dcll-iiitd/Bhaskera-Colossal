@@ -1,0 +1,71 @@
+# --- Python Base ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Virtual Environments ---
+# We keep requirements.txt and pyproject.toml, but ignore the actual env folders
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- uv (Fast Python Package Manager) ---
+# Usually, we keep uv.lock, but if you want it ignored, uncomment the next line.
+# Since you mentioned ignoring it earlier, I've left it here as a candidate:
+# uv.lock
+
+# --- Machine Learning / Data (Crucial for your setup) ---
+# Ignore actual data files, but keep the folder structure if you want
+# These often end up in data/ or models/ by accident
+*.csv
+*.jsonl
+*.parquet
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.model
+# Ignore weights/checkpoints directories
+**/checkpoints/
+**/outputs/
+
+# --- Loggers & Tracking ---
+# MLFlow, WandB, and local logs
+mlruns/
+wandb/
+*.log
+logs/
+
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store (MacOS)
+Thumbs.db (Windows)
+
+# --- Environment Variables (Security!) ---
+.env
+.venv
+.env.local
