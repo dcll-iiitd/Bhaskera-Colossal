@@ -36,8 +36,8 @@ def build_qlora(cfg, device):
 
     # 5. LoRA config (NO target_modules in config.py)
     peft_cfg = LoraConfig(
-        r=cfg.LORA["r"],
-        lora_alpha=cfg.LORA["alpha"],
+        r=cfg.LORA.r,
+        lora_alpha=cfg.LORA.alpha,
         target_modules=target_modules,
         task_type="CAUSAL_LM",
         bias="none",

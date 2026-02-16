@@ -1,102 +1,160 @@
+"""
+Stable training loop for FSDP / DDP.
+Fixes NaN issues with bf16 + FSDP.
+"""
+
 import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+import logging
+import math
+
+logger = logging.getLogger(__name__)
 
 
+# -----------------------------------------------------------
+# helpers
+# -----------------------------------------------------------
+def is_fsdp_model(model):
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+        return isinstance(model, FSDP)
+    except:
+        return False
+
+
+def clip_grads_fsdp(model, max_norm: float):
+    """
+    Proper global grad norm for FULL_SHARD FSDP
+    """
+    local_sq = torch.tensor(0.0, device="cuda")
+
+    for p in model.parameters():
+        if p.grad is not None:
+            local_sq += p.grad.detach().float().norm(2) ** 2
+
+    dist.all_reduce(local_sq, op=dist.ReduceOp.SUM)
+    global_norm = local_sq.sqrt().item()
+
+    if global_norm > max_norm:
+        coef = max_norm / (global_norm + 1e-6)
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad.detach().mul_(coef)
+
+    return global_norm
+
+
+# -----------------------------------------------------------
+# TRAIN
+# -----------------------------------------------------------
 def train(
     *,
     model,
     dataloader,
     optimizer,
-    scaler,
+    scaler=None,
     device,
-    grad_accum_steps: int,
-    max_steps: int,
-    local_rank: int,
-    global_rank: int,
-    logger=None,
+    grad_accum_steps,
+    max_steps,
+    local_rank,
+    global_rank,
+    cfg,
+    logger_obj=None,
 ):
-    """
-    Pure PyTorch training loop.
 
-    Args:
-        model: torch.nn.Module (NOT wrapped)
-        dataloader: PyTorch DataLoader
-        optimizer: torch.optim.Optimizer
-        scaler: torch.cuda.amp.GradScaler
-        device: torch.device
-        grad_accum_steps: gradient accumulation steps
-        max_steps: optimizer steps
-        local_rank: GPU index on this node
-        global_rank: global rank across all workers
-        logger: optional experiment logger (rank-0 only)
-    """
+    is_fsdp = is_fsdp_model(model)
+    strategy = "FSDP" if is_fsdp else "DDP"
 
-    # ------------------------
-    # DDP WRAP
-    # ------------------------
-    model = DDP(
-        model,
-        device_ids=[local_rank],
-        output_device=local_rank,
-        broadcast_buffers=False,
-        find_unused_parameters=False,
-    )
+    if global_rank == 0:
+        logger.info(f"Starting training with {strategy}")
+        logger.info(f"Max steps: {max_steps}")
+        logger.info(f"Grad accum: {grad_accum_steps}")
+        logger.info(f"Batch/GPU: {cfg.BATCH_SIZE}")
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
 
     step = 0
-    micro_step = 0
+    micro = 0
 
-    # ------------------------
-    # TRAINING LOOP
-    # ------------------------
+    # -------------------------------------------------------
     for batch in dataloader:
-        batch = {
-            k: v.to(device, non_blocking=True)
-            for k, v in batch.items()
-        }
 
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
-            outputs = model(**batch)
-            loss = outputs.loss / grad_accum_steps
+        # move to GPU
+        batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
 
-        scaler.scale(loss).backward()
-        micro_step += 1
+        # ---------------------------------------------------
+        # 🚨 NO AUTOCAST HERE (FSDP already handles bf16)
+        # ---------------------------------------------------
+        outputs = model(**batch)
+        loss = outputs.loss / grad_accum_steps
 
-        # ------------------------
-        # OPTIMIZER STEP
-        # ------------------------
-        if micro_step % grad_accum_steps == 0:
-            scaler.step(optimizer)
-            scaler.update()
+        # ---------------------------------------------------
+        # NaN guard
+        # ---------------------------------------------------
+        if not torch.isfinite(loss):
+            if global_rank == 0:
+                print("🚨 NaN loss detected — skipping batch")
+            optimizer.zero_grad(set_to_none=True)
+            micro = 0
+            continue
+
+        # backward
+        loss.backward()
+        micro += 1
+
+        # ---------------------------------------------------
+        # step after grad accum
+        # ---------------------------------------------------
+        if micro % grad_accum_steps == 0:
+
+            # grad clip
+            if is_fsdp:
+                grad_norm = clip_grads_fsdp(model, 1.0)
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), 1.0
+                ).item()
+
+            # grad explosion guard
+            if not math.isfinite(grad_norm):
+                if global_rank == 0:
+                    print(f"🚨 Non-finite grad norm {grad_norm}, skipping step")
+                optimizer.zero_grad(set_to_none=True)
+                micro = 0
+                continue
+
+            optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
-            # ------------------------
-            # LOGGING (rank-0 only)
-            # ------------------------
-            if logger is not None and global_rank == 0:
-                logger.log(
-                    {
-                        "loss": loss.item() * grad_accum_steps,
-                        "lr": optimizer.param_groups[0]["lr"],
-                    },
-                    step=step,
+            # logging
+            if global_rank == 0:
+                actual_loss = loss.item() * grad_accum_steps
+                print(
+                    f"[{strategy}][step {step}] "
+                    f"loss={actual_loss:.4f} "
+                    f"lr={optimizer.param_groups[0]['lr']:.2e} "
+                    f"grad_norm={grad_norm:.4f}"
                 )
 
-            if global_rank == 0:
-                print(
-                    f"[step {step}] "
-                    f"loss={loss.item() * grad_accum_steps:.4f}"
-                )
+                if logger_obj:
+                    logger_obj.log(
+                        {
+                            "loss": actual_loss,
+                            "lr": optimizer.param_groups[0]["lr"],
+                            "grad_norm": grad_norm,
+                            "step": step,
+                        },
+                        step=step,
+                    )
 
             step += 1
 
             if step >= max_steps:
                 break
 
-    # ------------------------
-    # FINALIZE LOGGER
-    # ------------------------
-    if logger is not None and global_rank == 0:
-        logger.finish()
+    if logger_obj and global_rank == 0:
+        logger_obj.finish()
+
+    if global_rank == 0:
+        print("Training finished.")

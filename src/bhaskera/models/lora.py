@@ -22,8 +22,8 @@ def apply_lora(model, lora_cfg):
     target_modules = infer_lora_targets(model)
 
     peft_cfg = LoraConfig(
-        r=lora_cfg["r"],
-        lora_alpha=lora_cfg["alpha"],
+        r=lora_cfg.r,
+        lora_alpha=lora_cfg.alpha,
         target_modules=target_modules,
         task_type="CAUSAL_LM",
         bias="none",
