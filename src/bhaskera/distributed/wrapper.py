@@ -1,6 +1,7 @@
 """
 Unified distributed training wrapper supporting both DDP and FSDP.
 """
+import os
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -18,14 +19,13 @@ def wrap_model_distributed(
 ) -> torch.nn.Module:
     """
     Wrap a model for distributed training using either DDP or FSDP.
-    
+
     Args:
-        model: The model to wrap (should already be on device for DDP, 
-               CPU or device for FSDP)
-        cfg: Configuration object with distributed settings
+        model:      The model to wrap (on device for DDP, CPU or device for FSDP)
+        cfg:        Configuration object with distributed settings
         local_rank: Local rank (GPU index on this node)
-        device: Device to use
-    
+        device:     Device to use
+
     Returns:
         Wrapped model (DDP or FSDP)
     """
@@ -36,20 +36,20 @@ def wrap_model_distributed(
             "torch.distributed must be initialized before wrapping model. "
             "This should be done automatically by Ray Train."
         )
-    
+
     logger.info(f"Distributed initialized: rank={dist.get_rank()}, world_size={dist.get_world_size()}")
-    
+
     strategy = cfg.distributed.strategy.lower()
-    
+
     if strategy == "ddp":
         logger.info("Using DDP (DistributedDataParallel)")
         return wrap_model_ddp(model, cfg, local_rank)
-    
+
     elif strategy == "fsdp":
         logger.info("Using FSDP (FullyShardedDataParallel)")
         from .fsdp_utils import wrap_model_fsdp
         return wrap_model_fsdp(model, cfg, local_rank)
-    
+
     else:
         raise ValueError(
             f"Unknown distributed strategy: {strategy}. "
@@ -64,12 +64,12 @@ def wrap_model_ddp(
 ) -> DDP:
     """
     Wrap a model with DDP.
-    
+
     Args:
-        model: The model to wrap (should already be on device)
-        cfg: Configuration object with DDP settings
+        model:      The model to wrap (should already be on device)
+        cfg:        Configuration object with DDP settings
         local_rank: Local rank (GPU index)
-    
+
     Returns:
         DDP-wrapped model
     """
@@ -77,7 +77,7 @@ def wrap_model_ddp(
     logger.info(f"  - Broadcast buffers: {cfg.distributed.ddp_broadcast_buffers}")
     logger.info(f"  - Find unused parameters: {cfg.distributed.ddp_find_unused_parameters}")
     logger.info(f"  - Gradient as bucket view: {cfg.distributed.ddp_gradient_as_bucket_view}")
-    
+
     ddp_model = DDP(
         model,
         device_ids=[local_rank],
@@ -86,7 +86,7 @@ def wrap_model_ddp(
         find_unused_parameters=cfg.distributed.ddp_find_unused_parameters,
         gradient_as_bucket_view=cfg.distributed.ddp_gradient_as_bucket_view,
     )
-    
+
     return ddp_model
 
 
@@ -94,15 +94,7 @@ def get_model_params_for_optimizer(model: torch.nn.Module):
     """
     Get model parameters for optimizer.
     Works with both DDP and FSDP models.
-    
-    Args:
-        model: Wrapped or unwrapped model
-    
-    Returns:
-        Iterator over model parameters
     """
-    # For FSDP with use_orig_params=True, we can use model.parameters() directly
-    # For DDP, we also use model.parameters()
     return model.parameters()
 
 
@@ -117,6 +109,9 @@ def is_ddp_model(model: torch.nn.Module) -> bool:
     return isinstance(model, DDP)
 
 
+# -----------------------------------------------------------
+# Checkpoint saving
+# -----------------------------------------------------------
 def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -127,13 +122,13 @@ def save_checkpoint(
 ):
     """
     Save checkpoint compatible with both DDP and FSDP.
-    
+
     Args:
-        model: Wrapped model (DDP or FSDP)
-        optimizer: Optimizer
-        step: Current training step
-        cfg: Configuration object
-        global_rank: Global rank
+        model:           Wrapped model (DDP or FSDP)
+        optimizer:       Optimizer
+        step:            Current training step
+        cfg:             Configuration object
+        global_rank:     Global rank
         checkpoint_path: Path to save checkpoint
     """
     if is_fsdp_model(model):
@@ -172,11 +167,11 @@ def save_fsdp_checkpoint(
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import StateDictType, FullStateDictConfig
     from .fsdp_utils import get_state_dict_type
-    
+
     state_dict_type = get_state_dict_type(cfg.distributed.fsdp_state_dict_type)
-    
+
     if state_dict_type == StateDictType.FULL_STATE_DICT:
-        # Save full state dict on rank 0
+        # Gather full state dict on rank 0
         with FSDP.state_dict_type(
             model,
             StateDictType.FULL_STATE_DICT,
@@ -184,7 +179,7 @@ def save_fsdp_checkpoint(
         ):
             model_state_dict = model.state_dict()
             optimizer_state_dict = FSDP.optim_state_dict(model, optimizer)
-        
+
         if global_rank == 0:
             checkpoint = {
                 'model_state_dict': model_state_dict,
@@ -193,16 +188,22 @@ def save_fsdp_checkpoint(
             }
             torch.save(checkpoint, checkpoint_path)
             logger.info(f"Saved FSDP full checkpoint to {checkpoint_path}")
-    
+
     else:
-        # For sharded checkpoints, each rank saves its own shard
-        # This requires more complex handling - simplified version here
-        logger.warning("Sharded checkpoint saving not fully implemented. Using full state dict.")
-        save_fsdp_checkpoint(model, optimizer, step, cfg._replace(
-            distributed=cfg.distributed._replace(fsdp_state_dict_type="FULL_STATE_DICT")
-        ), global_rank, checkpoint_path)
+        # FIX: was using ._replace() which doesn't exist on dataclasses.
+        # Temporarily override the field, recurse, then restore.
+        logger.warning("Sharded checkpoint saving not fully implemented. Falling back to FULL_STATE_DICT.")
+        orig_type = cfg.distributed.fsdp_state_dict_type
+        cfg.distributed.fsdp_state_dict_type = "FULL_STATE_DICT"
+        try:
+            save_fsdp_checkpoint(model, optimizer, step, cfg, global_rank, checkpoint_path)
+        finally:
+            cfg.distributed.fsdp_state_dict_type = orig_type
 
 
+# -----------------------------------------------------------
+# Checkpoint loading
+# -----------------------------------------------------------
 def load_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -212,14 +213,7 @@ def load_checkpoint(
 ) -> int:
     """
     Load checkpoint compatible with both DDP and FSDP.
-    
-    Args:
-        model: Wrapped model (DDP or FSDP)
-        optimizer: Optimizer
-        checkpoint_path: Path to checkpoint
-        cfg: Configuration object
-        device: Device to load to
-    
+
     Returns:
         Step number from checkpoint
     """
@@ -255,11 +249,11 @@ def load_fsdp_checkpoint(
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import StateDictType, FullStateDictConfig
     from .fsdp_utils import get_state_dict_type
-    
+
     state_dict_type = get_state_dict_type(cfg.distributed.fsdp_state_dict_type)
-    
+
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
+
     if state_dict_type == StateDictType.FULL_STATE_DICT:
         with FSDP.state_dict_type(
             model,
@@ -273,7 +267,7 @@ def load_fsdp_checkpoint(
                 checkpoint['optimizer_state_dict']
             )
             optimizer.load_state_dict(optim_state)
-    
+
     step = checkpoint['step']
     logger.info(f"Loaded FSDP checkpoint from {checkpoint_path} at step {step}")
     return step

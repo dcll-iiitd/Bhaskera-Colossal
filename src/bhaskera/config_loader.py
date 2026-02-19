@@ -4,19 +4,19 @@ Configuration loader with YAML support and backward compatibility.
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class DistributedConfig:
     """Distributed training configuration."""
     strategy: str = "ddp"  # "ddp" or "fsdp"
-    
+
     # DDP settings
     ddp_broadcast_buffers: bool = False
     ddp_find_unused_parameters: bool = False
     ddp_gradient_as_bucket_view: bool = True
-    
+
     # FSDP settings
     fsdp_sharding_strategy: str = "FULL_SHARD"
     fsdp_cpu_offload: bool = False
@@ -28,9 +28,9 @@ class DistributedConfig:
     fsdp_activation_checkpointing: bool = True
     fsdp_auto_wrap_policy: str = "transformer_auto_wrap"
     fsdp_transformer_layer_cls: list = None
-    fsdp_min_num_params: int = 1e8
+    fsdp_min_num_params: int = 100_000_000
     fsdp_state_dict_type: str = "FULL_STATE_DICT"
-    
+
     def __post_init__(self):
         if self.fsdp_transformer_layer_cls is None:
             self.fsdp_transformer_layer_cls = [
@@ -51,35 +51,36 @@ class Config:
     MODEL_NAME: str = "tiiuae/falcon-7b"
     ATTN_IMPL: Optional[str] = None
     DTYPE: str = "float16"
-    
+
     # Dataset
     DATASET_NAME: str = "ultrachat"
     SEQ_LEN: int = 2048
-    
+
     # Training
     BATCH_SIZE: int = 2
     GRAD_ACCUM: int = 8
     LR: float = 2e-4
     MAX_STEPS: int = 20
-    
+    NUM_EPOCHS: int = 1          # NEW: number of full passes over the dataset
+
     # PEFT
     PEFT: str = "qlora"
     LORA: Dict[str, Any] = None
-    
+
     # Logging
     TRACKER: Optional[str] = None
     PROJECT: str = "bhaskera-training"
     RUN_NAME: str = "experiment-001"
-    
+
     # Checkpointing
     CHECKPOINT_ENABLED: bool = False
     CHECKPOINT_DIR: str = "./checkpoints"
     CHECKPOINT_INTERVAL: int = 100
     CHECKPOINT_KEEP_LAST_N: int = 3
-    
+
     # Distributed
     distributed: DistributedConfig = None
-    
+
     def __post_init__(self):
         if self.LORA is None:
             self.LORA = {"r": 16, "alpha": 32, "dropout": 0.05}
@@ -90,36 +91,35 @@ class Config:
 def load_config(config_path: Optional[str] = None) -> Config:
     """
     Load configuration from YAML file or use defaults.
-    
+
     Args:
         config_path: Path to YAML config file. If None, uses defaults.
-    
+
     Returns:
         Config object
     """
     if config_path is None:
-        # Return default config for backward compatibility
         return Config()
-    
+
     config_path = Path(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
-    
+
     with open(config_path, 'r') as f:
         yaml_config = yaml.safe_load(f)
-    
+
     # Parse distributed config
     dist_cfg_dict = yaml_config.get('training', {}).get('distributed', {})
     strategy = dist_cfg_dict.get('strategy', 'ddp')
-    
+
     # DDP settings
     ddp_cfg = dist_cfg_dict.get('ddp', {})
-    
+
     # FSDP settings
     fsdp_cfg = dist_cfg_dict.get('fsdp', {})
     mixed_precision = fsdp_cfg.get('mixed_precision', {})
     auto_wrap = fsdp_cfg.get('auto_wrap_policy', {})
-    
+
     dist_config = DistributedConfig(
         strategy=strategy,
         # DDP
@@ -140,26 +140,26 @@ def load_config(config_path: Optional[str] = None) -> Config:
         fsdp_min_num_params=int(auto_wrap.get('min_num_params', 1e8)),
         fsdp_state_dict_type=fsdp_cfg.get('state_dict_type', 'FULL_STATE_DICT'),
     )
-    
+
     # Model config
     model_cfg = yaml_config.get('model', {})
-    
+
     # Dataset config
     dataset_cfg = yaml_config.get('dataset', {})
-    
+
     # Training config
     training_cfg = yaml_config.get('training', {})
-    
+
     # PEFT config
     peft_cfg = yaml_config.get('peft', {})
     lora_cfg = peft_cfg.get('lora', {})
-    
+
     # Logging config
     logging_cfg = yaml_config.get('logging', {})
-    
+
     # Checkpointing config
     checkpoint_cfg = yaml_config.get('checkpointing', {})
-    
+
     return Config(
         # Model
         MODEL_NAME=model_cfg.get('name', 'tiiuae/falcon-7b'),
@@ -173,6 +173,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
         GRAD_ACCUM=training_cfg.get('grad_accum', 8),
         LR=training_cfg.get('lr', 2e-4),
         MAX_STEPS=training_cfg.get('max_steps', 20),
+        NUM_EPOCHS=training_cfg.get('num_epochs', 1),       # NEW
         # PEFT
         PEFT=peft_cfg.get('method', 'qlora'),
         LORA={

@@ -18,10 +18,10 @@ import bhaskera.config as legacy_config
 from bhaskera.data.registry import build_dataset
 from bhaskera.models.registry import build_model
 
-# Import new modules
+# FIX: correct import paths
 from bhaskera.config_loader import load_config
-from bhaskera.distributed_wrapper import wrap_model_distributed
-from bhaskera.train_loop_unified import train
+from bhaskera.distributed.wrapper import wrap_model_distributed   # was: bhaskera.distributed_wrapper
+from bhaskera.trainer.train_loop import train                      # was: bhaskera.train_loop_unified
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,9 +38,7 @@ def train_func(train_loop_config):
     import torch.distributed as dist
 
     # Ray Train automatically sets up the distributed backend
-    # But we need to ensure it's initialized for FSDP
     if not dist.is_initialized():
-        # This shouldn't happen with Ray Train, but just in case
         logger.warning("Distributed not initialized by Ray, initializing manually")
         dist.init_process_group(backend="nccl")
 
@@ -64,7 +62,6 @@ def train_func(train_loop_config):
     else:
         # Backward compatibility: use legacy config module
         cfg = legacy_config
-        # Add default distributed config for backward compatibility
         from bhaskera.config_loader import DistributedConfig
         if not hasattr(cfg, 'distributed'):
             cfg.distributed = DistributedConfig(strategy="ddp")
@@ -89,15 +86,10 @@ def train_func(train_loop_config):
         pin_memory=True,
     )
 
-    # Build model (on CPU or GPU depending on strategy)
-    # For FSDP, model can be on CPU initially
-    # For DDP, model should be on GPU
+    # Build model
     if cfg.distributed.strategy.lower() == "fsdp":
-        # For FSDP, we can build on CPU to save memory
-        # The FSDP wrapper will handle device placement
         model_device = torch.device("cpu")
     else:
-        # For DDP, build directly on GPU
         model_device = device
 
     model = build_model(cfg, model_device)
@@ -115,12 +107,11 @@ def train_func(train_loop_config):
 
     optimizer = torch.optim.AdamW(
         trainable_params,
-        lr=config.LR,
+        lr=cfg.LR,          # FIX: was config.LR (wrong variable name)
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.01,
     )
-
 
     # Gradient scaler
     scaler = torch.amp.GradScaler("cuda")
@@ -144,6 +135,8 @@ def train_func(train_loop_config):
         global_rank=global_rank,
         cfg=cfg,
         logger_obj=logger_obj,
+        num_epochs=getattr(cfg, 'NUM_EPOCHS', 1),
+        checkpoint_dir=cfg.CHECKPOINT_DIR if getattr(cfg, 'CHECKPOINT_ENABLED', False) else None,
     )
 
 
@@ -153,25 +146,15 @@ def train_func(train_loop_config):
 def launch_ray(num_workers: int, config_path: str = None):
     """
     Launch distributed training with Ray.
-
-    Args:
-        num_workers: Number of GPUs/workers
-        config_path: Path to YAML config file (optional)
     """
-    # Shutdown any existing Ray instance
     if ray.is_initialized():
         ray.shutdown()
 
-    # Initialize Ray with explicit GPU configuration
     logger.info(f"Initializing Ray with {num_workers} GPUs")
     ray.init(
         num_gpus=num_workers,
-        # Set log verbosity if needed for debugging
-        # logging_level=logging.INFO,
     )
 
-    # Ray Train will automatically set up the torch distributed backend
-    # We just need to configure it properly
     from ray.train.torch import TorchConfig
 
     trainer = TorchTrainer(
@@ -182,16 +165,14 @@ def launch_ray(num_workers: int, config_path: str = None):
         scaling_config=ScalingConfig(
             num_workers=num_workers,
             use_gpu=True,
-            # Explicitly allocate 1 GPU per worker
             resources_per_worker={
-                "GPU": 1,  # Each worker gets 1 GPU
-                "CPU": 2,  # Each worker gets 2 CPUs (adjust as needed)
+                "GPU": 1,
+                "CPU": 2,
             },
         ),
-        # Explicitly configure torch distributed backend for FSDP
         torch_config=TorchConfig(
-            backend="nccl",  # Use NCCL for GPU communication
-            timeout_s=1800,  # 30 minute timeout for operations
+            backend="nccl",
+            timeout_s=1800,
         ),
     )
 

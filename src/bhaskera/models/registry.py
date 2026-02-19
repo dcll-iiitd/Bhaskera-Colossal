@@ -15,20 +15,27 @@ def build_model(cfg, device):
     if cfg.PEFT == "lora":
         model = apply_lora(model, cfg.LORA)
 
-        # freeze base
+        # Freeze base weights
         for name, p in model.named_parameters():
             if "lora_" not in name:
                 p.requires_grad = False
 
-        # 🔥 CRITICAL: unify dtype for FSDP
+        # Re-enable gradient checkpointing AFTER LoRA wrapping.
+        # PEFT replaces the model's forward method, which silently breaks
+        # gradient checkpointing that was enabled before apply_lora().
+        # use_reentrant=False is required for PEFT compatibility.
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        model.config.use_cache = False
+
+        # Unify dtype for FSDP
         target_dtype = torch.bfloat16
         for p in model.parameters():
             p.data = p.data.to(target_dtype)
 
-        # sanity print
-        total = sum(p.numel() for p in model.parameters())
+        total     = sum(p.numel() for p in model.parameters())
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
         print(
             f"🔥 LoRA active | trainable: {trainable/1e6:.2f}M "
             f"/ total: {total/1e6:.2f}M "
