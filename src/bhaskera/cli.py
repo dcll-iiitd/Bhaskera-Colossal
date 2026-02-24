@@ -1,5 +1,8 @@
 """
-Bhaskera CLI - Main entry point for training with FSDP support
+Bhaskera CLI - Main entry point for training with FSDP/DDP support.
+
+Usage:
+    bhaskera --config config_fsdp.yaml --num-workers 4
 """
 import argparse
 import yaml
@@ -38,11 +41,7 @@ class Config:
     def __getattr__(self, name):
         """
         Flat-name -> nested-path lookup for backward compatibility.
-
-        - Uses _MISSING sentinel so legitimate None values are returned correctly.
-        - Applies type coercion per field so YAML strings like "2e-4" become floats,
-          and fields that must be int/bool are cast correctly regardless of how
-          PyYAML parsed them.
+        Uses _MISSING sentinel so legitimate None values are returned correctly.
         """
         if name.startswith('_'):
             raise AttributeError(name)
@@ -52,24 +51,25 @@ class Config:
         except AttributeError:
             pass
 
-        # (path, coerce_fn)  — coerce_fn=None means return as-is
+        # (path, coerce_fn) — coerce_fn=None means return as-is
         mappings = {
-            'MODEL_NAME':             (('model', 'name'),                       None),
-            'ATTN_IMPL':              (('model', 'attn_impl'),                  None),
-            'DATASET_NAME':           (('dataset', 'name'),                     None),
-            'SEQ_LEN':                (('dataset', 'seq_len'),                  int),
-            'BATCH_SIZE':             (('training', 'batch_size'),              int),
-            'GRAD_ACCUM':             (('training', 'grad_accum'),              int),
-            'LR':                     (('training', 'lr'),                      float),
-            'MAX_STEPS':              (('training', 'max_steps'),               int),
-            'NUM_EPOCHS':             (('training', 'num_epochs'),              int),
-            'PEFT':                   (('peft', 'method'),                      None),
-            'LORA':                   (('peft', 'lora'),                        None),
-            'TRACKER':                (('training', 'tracker'),                 None),
-            'CHECKPOINT_ENABLED':     (('training', 'checkpoint', 'enabled'),   bool),
-            'CHECKPOINT_INTERVAL':    (('training', 'checkpoint', 'interval'),  int),
-            'CHECKPOINT_DIR':         (('training', 'checkpoint', 'dir'),       None),
-            'CHECKPOINT_KEEP_LAST_N': (('training', 'checkpoint', 'keep_last_n'), int),
+            'MODEL_NAME':             (('model', 'name'),                         None),
+            'ATTN_IMPL':              (('model', 'attn_impl'),                    None),
+            'DTYPE':                  (('model', 'dtype'),                        None),
+            'DATASET_NAME':           (('dataset', 'name'),                       None),
+            'SEQ_LEN':                (('dataset', 'seq_len'),                    int),
+            'BATCH_SIZE':             (('training', 'batch_size'),                int),
+            'GRAD_ACCUM':             (('training', 'grad_accum'),                int),
+            'LR':                     (('training', 'lr'),                        float),
+            'MAX_STEPS':              (('training', 'max_steps'),                 int),
+            'NUM_EPOCHS':             (('training', 'num_epochs'),                int),
+            'PEFT':                   (('peft', 'method'),                        None),
+            'LORA':                   (('peft', 'lora'),                          None),
+            'TRACKER':                (('logging', 'tracker'),                    None),
+            'CHECKPOINT_ENABLED':     (('checkpointing', 'enabled'),              bool),
+            'CHECKPOINT_INTERVAL':    (('checkpointing', 'save_interval'),        int),
+            'CHECKPOINT_DIR':         (('checkpointing', 'save_dir'),             None),
+            'CHECKPOINT_KEEP_LAST_N': (('checkpointing', 'keep_last_n'),          int),
         }
 
         if name in mappings:
@@ -82,7 +82,6 @@ class Config:
                         f"Config has no attribute '{name}' "
                         f"(missing key '{attr}' in path {path})"
                     )
-            # obj may legitimately be None — only coerce non-None values
             if obj is not None and coerce is not None:
                 obj = coerce(obj)
             return obj
@@ -101,91 +100,117 @@ def load_config(path: str) -> Config:
 # Distributed Wrapper - Supports DDP and FSDP
 # ==========================================================
 def wrap_model_distributed(model, config, local_rank, device):
-    """Wrap model with DDP or FSDP based on config."""
+    """
+    Wrap model with DDP or FSDP based on config.
+
+    IMPORTANT: For FSDP, the model must be on CPU when passed in.
+    FSDP's device_id parameter handles moving each shard to GPU.
+
+    For DDP, the model must already be fully on GPU before wrapping.
+    """
     from torch.nn.parallel import DistributedDataParallel as DDP
 
     try:
         strategy = config.training.distributed.strategy.lower()
-        use_fsdp = (strategy == "fsdp")
     except AttributeError:
-        use_fsdp = False
+        strategy = "ddp"
 
-    if use_fsdp:
-        logger.info(f"[Rank {torch.distributed.get_rank()}] Using FSDP")
-        try:
-            from torch.distributed.fsdp import (
-                FullyShardedDataParallel as FSDP,
-                ShardingStrategy,
-                MixedPrecision,
-                BackwardPrefetch,
+    # ------------------------------------------------------------------
+    # FSDP path
+    # ------------------------------------------------------------------
+    if strategy == "fsdp":
+        logger.info(f"[Rank {torch.distributed.get_rank()}] Wrapping with FSDP")
+
+        from torch.distributed.fsdp import (
+            FullyShardedDataParallel as FSDP,
+            ShardingStrategy,
+            MixedPrecision,
+            BackwardPrefetch,
+        )
+        from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+        from functools import partial
+
+        fsdp_cfg = config.training.distributed.fsdp
+
+        sharding_map = {
+            "FULL_SHARD":    ShardingStrategy.FULL_SHARD,
+            "SHARD_GRAD_OP": ShardingStrategy.SHARD_GRAD_OP,
+            "NO_SHARD":      ShardingStrategy.NO_SHARD,
+            "HYBRID_SHARD":  ShardingStrategy.HYBRID_SHARD,
+        }
+        sharding_strategy = sharding_map.get(
+            fsdp_cfg.sharding_strategy,
+            ShardingStrategy.FULL_SHARD
+        )
+
+        dtype_map = {
+            "float32":  torch.float32,
+            "float16":  torch.float16,
+            "bfloat16": torch.bfloat16,
+        }
+        mixed_precision = MixedPrecision(
+            param_dtype=dtype_map.get(fsdp_cfg.mixed_precision.param_dtype, torch.bfloat16),
+            reduce_dtype=dtype_map.get(fsdp_cfg.mixed_precision.reduce_dtype, torch.bfloat16),
+            buffer_dtype=dtype_map.get(fsdp_cfg.mixed_precision.buffer_dtype, torch.bfloat16),
+        )
+
+        # Find the actual transformer layer classes present in this model
+        layer_classes = []
+        for layer_name in fsdp_cfg.auto_wrap_policy.transformer_layer_cls:
+            for name, module in model.named_modules():
+                if module.__class__.__name__ == layer_name:
+                    layer_classes.append(module.__class__)
+                    logger.info(f"  Found transformer layer for FSDP wrap: {layer_name}")
+                    break
+
+        if not layer_classes:
+            # Safety net — fall back to size-based wrapping rather than crashing
+            logger.warning(
+                "No transformer layers matched the names in config. "
+                "Falling back to size-based auto wrap (min 100M params)."
             )
-            from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-            from functools import partial
-
-            fsdp_cfg = config.training.distributed.fsdp
-
-            sharding_map = {
-                "FULL_SHARD":    ShardingStrategy.FULL_SHARD,
-                "SHARD_GRAD_OP": ShardingStrategy.SHARD_GRAD_OP,
-                "NO_SHARD":      ShardingStrategy.NO_SHARD,
-                "HYBRID_SHARD":  ShardingStrategy.HYBRID_SHARD,
-            }
-            sharding_strategy = sharding_map.get(
-                fsdp_cfg.sharding_strategy,
-                ShardingStrategy.FULL_SHARD
+            from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+            auto_wrap_policy = partial(size_based_auto_wrap_policy, min_num_params=int(1e8))
+        else:
+            auto_wrap_policy = partial(
+                transformer_auto_wrap_policy,
+                transformer_layer_cls=set(layer_classes),
             )
 
-            dtype_map = {
-                "float32":  torch.float32,
-                "float16":  torch.float16,
-                "bfloat16": torch.bfloat16,
-            }
-            mixed_precision = MixedPrecision(
-                param_dtype=dtype_map.get(fsdp_cfg.mixed_precision.param_dtype, torch.float32),
-                reduce_dtype=dtype_map.get(fsdp_cfg.mixed_precision.reduce_dtype, torch.float32),
-                buffer_dtype=dtype_map.get(fsdp_cfg.mixed_precision.buffer_dtype, torch.float32),
-            )
+        backward_prefetch = None
+        if fsdp_cfg.backward_prefetch == "BACKWARD_PRE":
+            backward_prefetch = BackwardPrefetch.BACKWARD_PRE
+        elif fsdp_cfg.backward_prefetch == "BACKWARD_POST":
+            backward_prefetch = BackwardPrefetch.BACKWARD_POST
 
-            layer_classes = []
-            for layer_name in fsdp_cfg.auto_wrap_policy.transformer_layer_cls:
-                for name, module in model.named_modules():
-                    if module.__class__.__name__ == layer_name:
-                        layer_classes.append(module.__class__)
-                        logger.info(f"Found transformer layer: {layer_name}")
-                        break
+        # NOTE: No try/except here — if FSDP fails, we want the real error,
+        # not a silent fallback to DDP that produces a confusing secondary error.
+        model = FSDP(
+            model,
+            sharding_strategy=sharding_strategy,
+            auto_wrap_policy=auto_wrap_policy,
+            mixed_precision=mixed_precision,
+            backward_prefetch=backward_prefetch,
+            device_id=local_rank,   # FSDP moves each shard from CPU to this GPU
+            limit_all_gathers=True,
+            use_orig_params=True,   # Required for optimizer to see LoRA params
+        )
 
-            auto_wrap_policy = None
-            if layer_classes:
-                auto_wrap_policy = partial(
-                    transformer_auto_wrap_policy,
-                    transformer_layer_cls=set(layer_classes),
-                )
+        # Activation checkpointing (applied after FSDP wrapping)
+        if getattr(fsdp_cfg, "activation_checkpointing", False):
+            _apply_activation_checkpointing(model, layer_classes)
 
-            backward_prefetch = None
-            if fsdp_cfg.backward_prefetch == "BACKWARD_PRE":
-                backward_prefetch = BackwardPrefetch.BACKWARD_PRE
-            elif fsdp_cfg.backward_prefetch == "BACKWARD_POST":
-                backward_prefetch = BackwardPrefetch.BACKWARD_POST
+        logger.info(f"[Rank {torch.distributed.get_rank()}] FSDP wrap complete")
+        return model
 
-            model = FSDP(
-                model,
-                sharding_strategy=sharding_strategy,
-                auto_wrap_policy=auto_wrap_policy,
-                mixed_precision=mixed_precision,
-                backward_prefetch=backward_prefetch,
-                device_id=local_rank,
-                limit_all_gathers=True,
-                use_orig_params=True,
-            )
-            logger.info(f"[Rank {torch.distributed.get_rank()}] Model wrapped with FSDP")
-            return model
+    # ------------------------------------------------------------------
+    # DDP path — model must already be on GPU
+    # ------------------------------------------------------------------
+    logger.info(f"[Rank {torch.distributed.get_rank()}] Wrapping with DDP")
 
-        except Exception as e:
-            logger.error(f"FSDP wrapping failed: {e}")
-            logger.warning("Falling back to DDP")
-            use_fsdp = False
+    # If the model somehow ended up on CPU (e.g. misconfigured), move it now
+    model = model.to(device)
 
-    logger.info(f"[Rank {torch.distributed.get_rank()}] Using DDP")
     model = DDP(
         model,
         device_ids=[local_rank],
@@ -193,6 +218,35 @@ def wrap_model_distributed(model, config, local_rank, device):
         broadcast_buffers=False,
     )
     return model
+
+
+def _apply_activation_checkpointing(fsdp_model, layer_classes):
+    """Apply activation checkpointing to FSDP-wrapped model."""
+    try:
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+            checkpoint_wrapper,
+            CheckpointImpl,
+            apply_activation_checkpointing,
+        )
+        from functools import partial
+
+        if not layer_classes:
+            return
+
+        def check_fn(submodule):
+            return isinstance(submodule, tuple(layer_classes))
+
+        apply_activation_checkpointing(
+            fsdp_model,
+            checkpoint_wrapper_fn=partial(
+                checkpoint_wrapper,
+                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+            ),
+            check_fn=check_fn,
+        )
+        logger.info(f"Activation checkpointing applied to: {[c.__name__ for c in layer_classes]}")
+    except Exception as e:
+        logger.warning(f"Activation checkpointing failed (non-fatal): {e}")
 
 
 # ==========================================================
@@ -215,50 +269,72 @@ def train_func(config):
     device = torch.device(f"cuda:{local_rank}")
     logger.info(f"[Rank {global_rank}/{world_size}] Initialized on GPU {local_rank}")
 
+    # ------------------------------------------------------------------
     # Tokenizer
+    # ------------------------------------------------------------------
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
+    # ------------------------------------------------------------------
     # Dataset
+    # ------------------------------------------------------------------
     logger.info(f"[Rank {global_rank}] Building dataset...")
     dataset = build_dataset(config, tokenizer, global_rank, world_size)
     loader  = DataLoader(dataset, batch_size=config.BATCH_SIZE, pin_memory=True)
 
-    # Model
-    logger.info(f"[Rank {global_rank}] Building model...")
+    # ------------------------------------------------------------------
+    # Model device selection
+    # FSDP: build on CPU — FSDP's device_id moves each shard to GPU during init.
+    # DDP:  build on GPU — DDP requires the full model already on device.
+    # ------------------------------------------------------------------
     try:
-        use_fsdp     = config.training.distributed.strategy.lower() == "fsdp"
-        model_device = torch.device("cpu") if use_fsdp else device
+        use_fsdp = config.training.distributed.strategy.lower() == "fsdp"
     except AttributeError:
-        model_device = device
+        use_fsdp = False
 
+    model_device = torch.device("cpu") if use_fsdp else device
+    logger.info(f"[Rank {global_rank}] Building model on {model_device} (FSDP={use_fsdp})")
     model = build_model(config, model_device)
 
+    # ------------------------------------------------------------------
     # Distributed wrap
+    # ------------------------------------------------------------------
     logger.info(f"[Rank {global_rank}] Wrapping model for distributed training...")
     model = wrap_model_distributed(model, config, local_rank, device)
 
-    # Optimizer
+    # ------------------------------------------------------------------
+    # Optimizer — only trainable params (LoRA adapters)
+    # ------------------------------------------------------------------
     trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if global_rank == 0:
+        logger.info(f"Trainable parameters: {sum(p.numel() for p in trainable_params):,}")
+
     optimizer = torch.optim.AdamW(
         trainable_params,
-        lr=config.LR,           # guaranteed float via coerce in __getattr__
+        lr=config.LR,
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.01,
     )
 
+    # ------------------------------------------------------------------
     # Experiment logger (rank-0 only)
+    # ------------------------------------------------------------------
     logger_obj = None
-    try:
-        if config.TRACKER and global_rank == 0:
-            from bhaskera.utils.logger_factory import build_logger
-            logger_obj = build_logger(config)
-    except AttributeError:
-        pass
+    if config.TRACKER and global_rank == 0:
+        from bhaskera.utils.logger_factory import build_logger
+        log_gpu               = getattr(config, "log_gpu",               True)
+        gpu_log_every_n_steps = getattr(config, "gpu_log_every_n_steps", 1)
+        logger_obj = build_logger(
+            config,
+            log_gpu=log_gpu,
+            gpu_log_every_n_steps=gpu_log_every_n_steps,
+        )
 
+    # ------------------------------------------------------------------
     # Checkpointing
+    # ------------------------------------------------------------------
     try:
         ckpt_dir = config.CHECKPOINT_DIR if config.CHECKPOINT_ENABLED else None
     except AttributeError:
@@ -269,7 +345,9 @@ def train_func(config):
     except AttributeError:
         num_epochs = 1
 
+    # ------------------------------------------------------------------
     # Train
+    # ------------------------------------------------------------------
     logger.info(f"[Rank {global_rank}] Starting training...")
     train(
         model=model,
@@ -321,12 +399,9 @@ def main():
     logger.info(f"Ray resources available: {resources}")
     if resources.get('GPU', 0) < args.num_workers:
         logger.warning(
-            f"⚠️  Ray only sees {resources.get('GPU', 0)} GPUs "
+            f"Ray only sees {resources.get('GPU', 0)} GPUs "
             f"but {args.num_workers} workers requested!"
         )
-
-    # GPU:1 per worker — CPU intentionally omitted, Ray manages it automatically
-    resources_per_worker = {"GPU": 1}
 
     logger.info("Creating TorchTrainer...")
     trainer = TorchTrainer(
@@ -335,7 +410,7 @@ def main():
         scaling_config=ScalingConfig(
             num_workers=args.num_workers,
             use_gpu=True,
-            resources_per_worker=resources_per_worker,
+            resources_per_worker={"GPU": 1},
         ),
         torch_config=TorchConfig(backend="nccl", timeout_s=1800),
     )

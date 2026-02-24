@@ -118,9 +118,18 @@ def train_func(train_loop_config):
 
     # Setup logger if configured
     logger_obj = None
-    if cfg.TRACKER and global_rank == 0:
+    if config.TRACKER and global_rank == 0:
         from bhaskera.utils.logger_factory import build_logger
-        logger_obj = build_logger(cfg)
+
+        # Pull GPU-logging options from config if present, with safe defaults.
+        log_gpu = getattr(config, "log_gpu",True)
+        gpu_log_every_n_steps = getattr(config,"gpu_log_every_n_steps", 1)
+
+        logger_obj = build_logger(
+            config,
+            log_gpu=log_gpu,
+            gpu_log_every_n_steps=gpu_log_every_n_steps,
+        )
 
     # Run training
     train(
