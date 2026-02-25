@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from bhaskera.data.registry import build_dataset
 from bhaskera.models.registry import build_model
 from bhaskera.trainer.train_loop import train
+from bhaskera.utils.logger_factory import build_logger
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -323,7 +324,6 @@ def train_func(config):
     # ------------------------------------------------------------------
     logger_obj = None
     if config.TRACKER and global_rank == 0:
-        from bhaskera.utils.logger_factory import build_logger
         log_gpu               = getattr(config, "log_gpu",               True)
         gpu_log_every_n_steps = getattr(config, "gpu_log_every_n_steps", 1)
         logger_obj = build_logger(
