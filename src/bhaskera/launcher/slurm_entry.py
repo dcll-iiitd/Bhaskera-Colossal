@@ -75,6 +75,7 @@ def _init_distributed(global_rank: int, world_size: int) -> None:
         init_method="env://",
         rank=global_rank,
         world_size=world_size,
+        device_id=torch.device(f"cuda:{local_rank}"),  # add this
     )
 
     # Verify the group is healthy
