@@ -1,7 +1,10 @@
-# =========================
-# MLflow Server
-# =========================
-MLFLOW_TRACKING_URI: "http://127.0.0.1:5000"
+# =============================================================================
+# config_multinode.yaml
+# Bhaskera — Multi-node FSDP training configuration
+#
+# Use with:
+#   sbatch slurm/submit_multinode.sh --config config_multinode.yaml
+# =============================================================================
 
 # =========================
 # Model Configuration
@@ -22,21 +25,20 @@ dataset:
 # Training Configuration
 # =========================
 training:
+  # Per-GPU batch size. Effective global batch size:
+  #   batch_size × grad_accum × world_size
+  # For 2 nodes × 2 GPUs = 4 processes:
+  #   8 × 8 × 4 = 256 tokens/step
   batch_size: 8
   grad_accum: 8
 
-  # LR FIX: 2e-4 was too aggressive for LoRA + FSDP on a 7B model.
-  # The first gradient step at peak LR overshoots in bfloat16, causing
-  # attention softmax to produce inf → NaN on all subsequent batches.
-  # 5e-5 is the standard safe LR for LoRA on 7B+ models.
   lr: 5.0e-5
+  max_steps: 500
 
-  max_steps: 20
+  # More warmup steps for multi-node (larger effective batch → more warmup)
+  warmup_steps: 20
 
-  # WARMUP FIX: Linear warmup ramps LR from 0 → peak over these steps.
-  # Without warmup, step 0 immediately applies the full LR, which is the
-  # primary trigger for the NaN cascade in bfloat16 + FSDP training.
-  warmup_steps: 5
+  num_epochs: 3
 
   distributed:
     strategy: "fsdp"
@@ -48,6 +50,9 @@ training:
 
     fsdp:
       sharding_strategy: "FULL_SHARD"
+
+      # Multi-node note: CPU offload adds PCIe bandwidth pressure.
+      # Keep false unless you're OOM.
       cpu_offload: false
 
       mixed_precision:
@@ -55,8 +60,14 @@ training:
         reduce_dtype: "bfloat16"
         buffer_dtype: "bfloat16"
 
+      # BACKWARD_PRE overlaps comm with backward pass — important for multi-node
+      # where inter-node bandwidth is the bottleneck.
       backward_prefetch: "BACKWARD_PRE"
       forward_prefetch: false
+
+      # Activation checkpointing is essential on multi-node to keep per-GPU
+      # memory low (each GPU only holds 1/world_size of each layer's params,
+      # but activations are still per-GPU).
       activation_checkpointing: true
 
       auto_wrap_policy:
@@ -87,9 +98,9 @@ peft:
 # Logging
 # =========================
 logging:
-  tracker: "mlflow"
-  project: "bhaskera-training"
-  run_name: "experiment-fsdp-lora"
+  tracker: None
+  project: "bhaskera-multinode"
+  run_name: "experiment-fsdp-multinode"
 
 # =========================
 # Checkpointing
