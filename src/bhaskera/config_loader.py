@@ -126,7 +126,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
         fsdp_activation_checkpointing=fsdp_cfg.get('activation_checkpointing', True),
         fsdp_auto_wrap_policy=auto_wrap.get('type', 'transformer_auto_wrap'),
         fsdp_transformer_layer_cls=auto_wrap.get('transformer_layer_cls', None),
-        fsdp_min_num_params=int(auto_wrap.get('min_num_params', 1e8)),
+        fsdp_min_num_params=int(float(auto_wrap.get('min_num_params', 1e8))),
         fsdp_state_dict_type=fsdp_cfg.get('state_dict_type', 'FULL_STATE_DICT'),
     )
 
