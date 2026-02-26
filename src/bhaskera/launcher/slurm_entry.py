@@ -54,7 +54,7 @@ def _resolve_slurm_env() -> tuple[int, int, int]:
     return global_rank, local_rank, world_size
 
 
-def _init_distributed(global_rank: int, world_size: int) -> None:
+def _init_distributed(global_rank: int, world_size: int, local_rank: int) -> None:
     """
     Initialise torch.distributed using the env:// init method.
     MASTER_ADDR and MASTER_PORT must already be in the environment
