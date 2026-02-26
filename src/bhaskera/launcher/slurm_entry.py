@@ -69,6 +69,7 @@ def _init_distributed(global_rank: int, world_size: int) -> None:
     os.environ["RANK"]        = str(global_rank)
     os.environ["WORLD_SIZE"]  = str(world_size)
     os.environ["LOCAL_RANK"]  = str(int(os.environ.get("SLURM_LOCALID", 0)))
+    os.environ["LOCAL_RANK"]  = str(local_rank)
 
     dist.init_process_group(
         backend="nccl",
@@ -105,7 +106,7 @@ def _run_worker(args: argparse.Namespace) -> None:
     )
 
     # ---- torch.distributed ----
-    _init_distributed(global_rank, world_size)
+    _init_distributed(global_rank, world_size, local_rank)
 
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
