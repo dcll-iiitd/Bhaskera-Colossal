@@ -16,9 +16,8 @@
 #SBATCH --ntasks-per-node=2         # Must match GPUs per node you request
 #SBATCH --gres=gpu:2                # GPUs per node
 #SBATCH --cpus-per-task=10          # CPU cores per GPU task
-#SBATCH --mem=120G                  # RAM per node (adjust to your node spec)
 #SBATCH --partition=gpu             # Partition name on Rudra
-#SBATCH --time=24:00:00             # Wall time limit HH:MM:SS
+#SBATCH --time=00:30:00             # Wall time limit HH:MM:SS
 #SBATCH --output=logs/bhaskera_%j_%N.out   # stdout per node (%j=jobid, %N=nodename)
 #SBATCH --error=logs/bhaskera_%j_%N.err    # stderr per node
 #SBATCH --exclusive                 # Exclusive node access (no job sharing)
@@ -37,6 +36,7 @@ EXTRA_ARGS="$@"   # everything passed after the script name is forwarded to bhas
 # 1. Environment Setup — adapt paths to your Rudra environment
 # =============================================================================
 # Load CUDA via spack (Rudra-specific)
+. /home/apps/SPACK/spack/share/spack/setup-env.sh
 spack load /lvol4vd      # <-- replace hash with your spack CUDA hash if different
 
 # Activate your Python/conda environment
@@ -45,7 +45,7 @@ spack load /lvol4vd      # <-- replace hash with your spack CUDA hash if differe
 # conda activate bhaskera
 
 # Option B — venv (most portable)
-source /scratch/ldls-iiitd/training-framework/venv/bin/activate   # EDIT THIS PATH
+source /scratch/ldls-iiitd/training-framework/Bhaskera/.venv/bin/activate   # EDIT THIS PATH
 
 # Ensure the bhaskera package is importable
 export PYTHONPATH="/scratch/ldls-iiitd/training-framework:$PYTHONPATH"
