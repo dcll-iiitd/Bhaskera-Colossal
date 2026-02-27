@@ -18,9 +18,8 @@
 #SBATCH --ntasks-per-node=1          # ONE task per node — Ray manages GPU processes
 #SBATCH --gres=gpu:2                 # GPUs per node (Ray will use all of them)
 #SBATCH --cpus-per-task=20           # Enough CPUs for Ray workers + head
-#SBATCH --mem=120G
 #SBATCH --partition=gpu
-#SBATCH --time=24:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=logs/bhaskera_ray_%j_%N.out
 #SBATCH --error=logs/bhaskera_ray_%j_%N.err
 #SBATCH --exclusive
