@@ -32,8 +32,10 @@ EXTRA_ARGS="$@"
 # =============================================================================
 # Environment
 # =============================================================================
-spack load /lvol4vd
-source /scratch/ldls-iiitd/training-framework/venv/bin/activate
+. /home/apps/SPACK/spack/share/spack/setup-env.sh
+spack load /lvol4vd      # <-- replace hash with your spack CUDA hash if different
+source /scratch/ldls-iiitd/training-framework/Bhaskera/.venv/bin/activate   # EDIT THIS PATH
+
 export PYTHONPATH="/scratch/ldls-iiitd/training-framework:$PYTHONPATH"
 
 # =============================================================================
