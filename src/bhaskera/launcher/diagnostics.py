@@ -1,17 +1,14 @@
 """
 bhaskera.launcher.diagnostics
 ==============================
-Run via:  srun python -m bhaskera.launcher.diagnostics
+Run before a full training job to verify multi-node setup.
 
-Checks performed on every rank:
-  1. SLURM env vars are present and consistent
-  2. torch.distributed can be initialised (NCCL backend)
-  3. All-reduce across all ranks completes (verifies inter-node comm)
-  4. CUDA device is accessible and correct
-  5. bfloat16 tensor can be sent cross-node (catches dtype issues)
-  6. (Rank 0 only) prints a summary table
+Usage:
+    # SLURM:
+    srun python -m bhaskera.launcher.diagnostics
 
-Exit code 0 = everything OK.  Non-zero = something is broken.
+    # torchrun:
+    torchrun --nnodes=2 --nproc_per_node=2 ... -m bhaskera.launcher.diagnostics
 """
 from __future__ import annotations
 
@@ -29,17 +26,14 @@ def _env(key: str, default: str = "MISSING") -> str:
 
 
 def main() -> None:
-    global_rank = int(_env("SLURM_PROCID", "0"))
-    local_rank  = int(_env("SLURM_LOCALID", "0"))
-    world_size  = int(_env("SLURM_NTASKS", "1"))
+    # Support both SLURM and torchrun env var names
+    global_rank = int(_env("SLURM_PROCID",   _env("RANK",       "0")))
+    local_rank  = int(_env("SLURM_LOCALID",  _env("LOCAL_RANK", "0")))
+    world_size  = int(_env("SLURM_NTASKS",   _env("WORLD_SIZE", "1")))
     hostname    = socket.gethostname()
-
     master_addr = _env("MASTER_ADDR")
     master_port = _env("MASTER_PORT")
 
-    # ------------------------------------------------------------------ #
-    # 1. Basic env check
-    # ------------------------------------------------------------------ #
     missing = [k for k in ("MASTER_ADDR", "MASTER_PORT") if _env(k) == "MISSING"]
     if missing:
         print(f"[rank {global_rank}] ERROR: missing env vars: {missing}", flush=True)
@@ -51,15 +45,10 @@ def main() -> None:
         flush=True,
     )
 
-    # ------------------------------------------------------------------ #
-    # 2. torch.distributed init
-    # ------------------------------------------------------------------ #
     os.environ.update({
-        "RANK":        str(global_rank),
-        "WORLD_SIZE":  str(world_size),
-        "LOCAL_RANK":  str(local_rank),
-        "MASTER_ADDR": master_addr,
-        "MASTER_PORT": master_port,
+        "RANK": str(global_rank), "WORLD_SIZE": str(world_size),
+        "LOCAL_RANK": str(local_rank),
+        "MASTER_ADDR": master_addr, "MASTER_PORT": master_port,
     })
 
     t0 = time.time()
@@ -68,9 +57,6 @@ def main() -> None:
     init_ms = (time.time() - t0) * 1000
     print(f"[rank {global_rank}] dist.init OK in {init_ms:.0f} ms", flush=True)
 
-    # ------------------------------------------------------------------ #
-    # 3. CUDA device
-    # ------------------------------------------------------------------ #
     if not torch.cuda.is_available():
         print(f"[rank {global_rank}] ERROR: CUDA not available!", flush=True)
         sys.exit(1)
@@ -84,31 +70,22 @@ def main() -> None:
         flush=True,
     )
 
-    # ------------------------------------------------------------------ #
-    # 4. All-reduce sanity check (float32)
-    # ------------------------------------------------------------------ #
+    # All-reduce float32
     t = torch.ones(1, device=device) * global_rank
     dist.all_reduce(t, op=dist.ReduceOp.SUM)
-    expected = sum(range(world_size))
-    assert t.item() == expected, (
-        f"[rank {global_rank}] all_reduce mismatch: got {t.item()}, expected {expected}"
-    )
+    assert t.item() == sum(range(world_size)), \
+        f"[rank {global_rank}] all_reduce mismatch: {t.item()} != {sum(range(world_size))}"
     print(f"[rank {global_rank}] all_reduce float32 OK", flush=True)
 
-    # ------------------------------------------------------------------ #
-    # 5. All-reduce with bfloat16 (the actual training dtype)
-    # ------------------------------------------------------------------ #
+    # All-reduce bfloat16
     bf = torch.ones(1, device=device, dtype=torch.bfloat16)
     dist.all_reduce(bf, op=dist.ReduceOp.SUM)
-    assert abs(bf.item() - world_size) < 0.1, (
-        f"[rank {global_rank}] bfloat16 all_reduce failed: got {bf.item()}"
-    )
+    assert abs(bf.item() - world_size) < 0.1, \
+        f"[rank {global_rank}] bfloat16 all_reduce failed: {bf.item()}"
     print(f"[rank {global_rank}] all_reduce bfloat16 OK", flush=True)
 
-    # ------------------------------------------------------------------ #
-    # 6. Bandwidth micro-benchmark (optional, ~100 MB)
-    # ------------------------------------------------------------------ #
-    size = 25 * 1024 * 1024   # 25M floats = 100 MB
+    # Bandwidth benchmark (~100 MB)
+    size = 25 * 1024 * 1024
     big  = torch.ones(size, device=device)
     dist.barrier()
     t0 = time.time()
@@ -116,18 +93,27 @@ def main() -> None:
         dist.all_reduce(big, op=dist.ReduceOp.SUM)
     torch.cuda.synchronize()
     elapsed = time.time() - t0
-    # All-reduce bandwidth formula: 2 × (N-1)/N × size × dtype_bytes / time
-    bw_gb = (2 * (world_size - 1) / world_size * size * 4 * 5) / elapsed / 1e9
+    bw_gb = (2 * (world_size - 1) / max(world_size, 2) * size * 4 * 5) / elapsed / 1e9
+
+    # Collect all hostnames for the summary
+    hostname_tensor = torch.zeros(256, dtype=torch.uint8, device=device)
+    for i, c in enumerate(hostname.encode()[:256]):
+        hostname_tensor[i] = c
+    all_hostnames_t = [torch.zeros(256, dtype=torch.uint8, device=device)
+                       for _ in range(world_size)]
+    dist.all_gather(all_hostnames_t, hostname_tensor)
 
     if global_rank == 0:
+        nodes = sorted({bytes(t.cpu().tolist()).split(b'\x00')[0].decode()
+                        for t in all_hostnames_t})
         print(
-            f"\n{'='*55}\n"
+            f"\n{'='*60}\n"
             f"  Bhaskera multi-node diagnostics PASSED\n"
-            f"  Nodes        : {len(set()) or int(_env('SLURM_NNODES','?'))}\n"
+            f"  Nodes ({len(nodes)}): {', '.join(nodes)}\n"
             f"  World size   : {world_size}\n"
             f"  NCCL init    : {init_ms:.0f} ms\n"
             f"  Allreduce BW : {bw_gb:.2f} GB/s (est, 100 MB × 5 iters)\n"
-            f"{'='*55}\n",
+            f"{'='*60}\n",
             flush=True,
         )
 
