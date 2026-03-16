@@ -55,6 +55,13 @@ class WorkerContext:
 def run_worker(ctx: WorkerContext, cfg) -> None:
     _setup_logging(ctx.global_rank)
 
+    # ── Audio jobs: route entirely to the Whisper pipeline ───────────────────
+    # Must be checked BEFORE any LLM-specific code (tokenizer, dataset, model).
+    if cfg.DATASET_NAME.lower() == "audio":
+        from bhaskera.audio.worker import run_audio_worker
+        run_audio_worker(ctx, cfg)
+        return
+
     is_rank0 = ctx.global_rank == 0
 
     # ── config summary (rank 0 only) ──────────────────────────────────────────

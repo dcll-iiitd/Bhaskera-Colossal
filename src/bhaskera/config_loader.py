@@ -91,6 +91,28 @@ class Config:
     # Distributed
     distributed: DistributedConfig = field(default_factory=DistributedConfig)
 
+    # ── Audio (ASR) ───────────────────────────────────────────────────────────
+    # Only populated when DATASET_NAME == "audio"; ignored for all LLM jobs.
+    #
+    # AUDIO_MODEL_FAMILY: explicit override for the ASR pipeline registry.
+    #   Leave None to auto-detect from MODEL_NAME.
+    #   Supported values: "whisper" | "wav2vec2" | "mms" | "seamless"
+    AUDIO_MODEL_FAMILY: Optional[str] = None
+    AUDIO_LANGUAGE: str = "English"
+    AUDIO_TASK: str = "transcribe"
+    AUDIO_SAMPLING_RATE: int = 16_000
+    AUDIO_TEST_SIZE: float = 0.1
+    AUDIO_NUM_PROC: int = 4
+    AUDIO_OUTPUT_DIR: str = "./whisper-finetuned"
+    AUDIO_PRIMARY_DATASET: Dict[str, Any] = field(default_factory=lambda: {
+        "name": "PolyAI/minds14",
+        "config": "en-US",
+        "split": "train[:500]",
+        "transcript_col": "english_transcription",
+        "audio_col": "audio",
+    })
+    AUDIO_SECONDARY_DATASET: Optional[Dict[str, Any]] = None
+
     def as_dict(self) -> Dict[str, Any]:
         """Return flat scalar fields for logging hyperparameters."""
         skip = {"distributed", "LORA"}
@@ -124,6 +146,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
     lora_cfg    = peft_cfg.get("lora", {})
     log_cfg     = y.get("logging", {})
     ckpt_cfg    = y.get("checkpointing", {})
+    audio_cfg   = y.get("audio", {})
 
     tracker_raw = log_cfg.get("tracker")
     # YAML `None` comes through as the Python None or the string "None"
@@ -176,4 +199,20 @@ def load_config(config_path: Optional[str] = None) -> Config:
         CHECKPOINT_INTERVAL=ckpt_cfg.get("save_interval", 100),
         CHECKPOINT_KEEP_LAST_N=ckpt_cfg.get("keep_last_n", 3),
         distributed=dist,
+        # ── Audio fields (only meaningful when DATASET_NAME="audio") ──────────
+        AUDIO_MODEL_FAMILY=model_cfg.get("family") or audio_cfg.get("model_family") or None,
+        AUDIO_LANGUAGE=audio_cfg.get("language", model_cfg.get("language", "English")),
+        AUDIO_TASK=audio_cfg.get("task", model_cfg.get("task", "transcribe")),
+        AUDIO_SAMPLING_RATE=ds_cfg.get("sampling_rate", 16_000),
+        AUDIO_TEST_SIZE=ds_cfg.get("test_size", 0.1),
+        AUDIO_NUM_PROC=ds_cfg.get("num_proc", 4),
+        AUDIO_OUTPUT_DIR=y.get("output", {}).get("dir", "./whisper-finetuned"),
+        AUDIO_PRIMARY_DATASET=ds_cfg.get("primary", {
+            "name": "PolyAI/minds14",
+            "config": "en-US",
+            "split": "train[:500]",
+            "transcript_col": "english_transcription",
+            "audio_col": "audio",
+        }),
+        AUDIO_SECONDARY_DATASET=ds_cfg.get("secondary") or None,
     )

@@ -1,0 +1,114 @@
+Failure # 1 (occurred at 2026-03-16_12-04-11)
+[36mray::_Inner.train()[39m (pid=2019226, ip=192.168.22.23, actor_id=0cbcd8a4edecd37777ddedf901000000, repr=TorchTrainer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/tune/trainable/trainable.py", line 400, in train
+    raise skipped from exception_cause(skipped)
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/utils.py", line 54, in check_for_failure
+    ray.get(object_ref)
+           ^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^
+ray.exceptions.RayTaskError(TypeError): [36mray::_RayTrainWorker__execute.get_next()[39m (pid=2019456, ip=192.168.22.23, actor_id=90b38485f381355693d95daa01000000, repr=<ray.train._internal.worker_group.RayTrainWorker object at 0x79444db2a850>)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/worker_group.py", line 33, in __execute
+    raise skipped from exception_cause(skipped)
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/utils.py", line 129, in discard_return_wrapper
+    train_func(*args, **kwargs)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/launcher/ray_entry.py", line 229, in _ray_train_func
+    run_worker(ctx, cfg)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/launcher/worker_core.py", line 62, in run_worker
+    run_audio_worker(ctx, cfg)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/worker.py", line 83, in run_audio_worker
+    run_audio_training(cfg, global_rank=ctx.global_rank)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/trainer.py", line 56, in run_audio_training
+    pipeline.load_processor()
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/pipelines/mms_pipeline.py", line 90, in load_processor
+    self.tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/tokenization_utils_base.py", line 1751, in from_pretrained
+    return cls._from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/tokenization_utils_base.py", line 2003, in _from_pretrained
+    tokenizer = cls(*init_inputs, **init_kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/models/wav2vec2/tokenization_wav2vec2.py", line 154, in __init__
+    with open(vocab_file, encoding="utf-8") as vocab_handle:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: expected str, bytes or os.PathLike object, not NoneType
+Failure # 2 (occurred at 2026-03-16_12-04-43)
+[36mray::_Inner.train()[39m (pid=2019981, ip=192.168.22.23, actor_id=37dbdce11dd6ab9e5dbf3d1001000000, repr=TorchTrainer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/tune/trainable/trainable.py", line 400, in train
+    raise skipped from exception_cause(skipped)
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/utils.py", line 54, in check_for_failure
+    ray.get(object_ref)
+           ^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^
+ray.exceptions.RayTaskError(TypeError): [36mray::_RayTrainWorker__execute.get_next()[39m (pid=2020039, ip=192.168.22.23, actor_id=9ca45d5d20e4fe89db93ea6501000000, repr=<ray.train._internal.worker_group.RayTrainWorker object at 0x79d00a245e10>)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/worker_group.py", line 33, in __execute
+    raise skipped from exception_cause(skipped)
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/utils.py", line 129, in discard_return_wrapper
+    train_func(*args, **kwargs)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/launcher/ray_entry.py", line 229, in _ray_train_func
+    run_worker(ctx, cfg)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/launcher/worker_core.py", line 62, in run_worker
+    run_audio_worker(ctx, cfg)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/worker.py", line 83, in run_audio_worker
+    run_audio_training(cfg, global_rank=ctx.global_rank)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/trainer.py", line 56, in run_audio_training
+    pipeline.load_processor()
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/pipelines/mms_pipeline.py", line 90, in load_processor
+    self.tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/tokenization_utils_base.py", line 1751, in from_pretrained
+    return cls._from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/tokenization_utils_base.py", line 2003, in _from_pretrained
+    tokenizer = cls(*init_inputs, **init_kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/models/wav2vec2/tokenization_wav2vec2.py", line 154, in __init__
+    with open(vocab_file, encoding="utf-8") as vocab_handle:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: expected str, bytes or os.PathLike object, not NoneType
+Failure # 3 (occurred at 2026-03-16_12-05-17)
+[36mray::_Inner.train()[39m (pid=2020318, ip=192.168.22.23, actor_id=52ae366a1f47b0aca587b8d701000000, repr=TorchTrainer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/tune/trainable/trainable.py", line 400, in train
+    raise skipped from exception_cause(skipped)
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/utils.py", line 54, in check_for_failure
+    ray.get(object_ref)
+           ^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^
+ray.exceptions.RayTaskError(TypeError): [36mray::_RayTrainWorker__execute.get_next()[39m (pid=2020378, ip=192.168.22.23, actor_id=984c9753d167a9ea6fbeee0701000000, repr=<ray.train._internal.worker_group.RayTrainWorker object at 0x7ce29efb79d0>)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/worker_group.py", line 33, in __execute
+    raise skipped from exception_cause(skipped)
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/ray/train/_internal/utils.py", line 129, in discard_return_wrapper
+    train_func(*args, **kwargs)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/launcher/ray_entry.py", line 229, in _ray_train_func
+    run_worker(ctx, cfg)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/launcher/worker_core.py", line 62, in run_worker
+    run_audio_worker(ctx, cfg)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/worker.py", line 83, in run_audio_worker
+    run_audio_training(cfg, global_rank=ctx.global_rank)
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/trainer.py", line 56, in run_audio_training
+    pipeline.load_processor()
+  File "/mnt/disk1/Framework/multinode/Bhaskera/src/bhaskera/audio/pipelines/mms_pipeline.py", line 90, in load_processor
+    self.tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/tokenization_utils_base.py", line 1751, in from_pretrained
+    return cls._from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/tokenization_utils_base.py", line 2003, in _from_pretrained
+    tokenizer = cls(*init_inputs, **init_kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/disk1/Framework/multinode/.venv/lib/python3.11/site-packages/transformers/models/wav2vec2/tokenization_wav2vec2.py", line 154, in __init__
+    with open(vocab_file, encoding="utf-8") as vocab_handle:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: expected str, bytes or os.PathLike object, not NoneType

@@ -1,0 +1,86 @@
+# =============================================================================
+# config_audio_mms.yaml  —  Meta MMS CTC ASR fine-tuning via bhaskera
+#
+# Run with:
+#   bhaskera --config config_audio_mms.yaml --num-workers 2
+#
+# MMS is highly parameter-efficient: only ~2M adapter params are trained.
+# Set audio.language to the ISO 639-3 code for your target language.
+# =============================================================================
+
+# ── Launcher ──────────────────────────────────────────────────────────────────
+launcher:
+  backend: ray
+  num_workers: 2
+  max_failures: 2
+  ray_results_dir: ./ray_results/audio
+  run_name: null
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+model:
+  name: "facebook/mms-300m"  # or facebook/mms-1b, facebook/mms-1b-fl102
+  # family: "mms"             # optional: explicit override (auto-detected here)
+  language: "eng"             # ISO 639-3 code: eng, hin, fra, spa, deu, ara …
+  task: "transcribe"
+  attn_impl: null
+  dtype: "float16"
+
+# ── Dataset ───────────────────────────────────────────────────────────────────
+dataset:
+  name: "audio"
+
+  primary:
+    name: "mozilla-foundation/common_voice_11_0"
+    config: "en"
+    split: "train[:500]"
+    transcript_col: "sentence"
+    audio_col: "audio"
+
+  # secondary: null  # uncomment and add a second source if needed
+
+  sampling_rate: 16000
+  test_size: 0.1
+  num_proc: 4
+
+# ── Audio ─────────────────────────────────────────────────────────────────────
+audio:
+  language: "eng"     # must match model.language — ISO 639-3
+  task: "transcribe"
+  model_family: "mms" # explicit family (also auto-detected from model name)
+
+# ── Training ──────────────────────────────────────────────────────────────────
+# MMS trains only adapter (~2M params) → can use larger batch / lower LR
+training:
+  batch_size: 16
+  grad_accum: 2
+  lr: 1.0e-4
+  warmup_steps: 50
+  max_steps: 300
+  num_epochs: 3
+
+  distributed:
+    strategy: "ddp"
+    ddp:
+      find_unused_parameters: false
+
+# ── PEFT ──────────────────────────────────────────────────────────────────────
+peft:
+  method: "none"   # MMS uses its own adapter mechanism, not LoRA
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  tracker: null
+  project: "bhaskera-audio"
+  run_name: "mms-asr-ddp"
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+checkpointing:
+  enabled: true
+  save_dir: "./checkpoints/audio-mms"
+  save_interval: 100
+  keep_last_n: 3
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output:
+  dir: "./mms-finetuned"
+  push_to_hub: false

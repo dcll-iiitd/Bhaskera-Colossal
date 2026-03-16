@@ -1,0 +1,99 @@
+# =============================================================================
+# config_audio.yaml  —  Whisper ASR fine-tuning via bhaskera
+#
+# Run with:
+#   bhaskera --config config_audio.yaml --num-workers 2
+#
+# Other model configs:
+#   config_audio_wav2vec2.yaml  —  Wav2Vec2 CTC
+#   config_audio_mms.yaml       —  Meta MMS multilingual CTC
+#
+# The correct ASR pipeline is resolved automatically from model.name.
+# Set model.family explicitly to override auto-detection.
+# =============================================================================
+
+# ── Launcher ──────────────────────────────────────────────────────────────────
+launcher:
+  backend: ray
+  num_workers: 2
+  max_failures: 2
+  ray_results_dir: ./ray_results/audio
+  run_name: null
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+model:
+  name: "openai/whisper-small"     # swap to openai/whisper-large-v3 for max perf
+  # family: "whisper"              # optional: explicit override (auto-detected here)
+  language: "English"
+  task: "transcribe"
+  attn_impl: null
+  dtype: "float16"                 # use bfloat16 on A100/H100
+
+# ── Dataset ───────────────────────────────────────────────────────────────────
+# CRITICAL: name must be exactly "audio" — this is what routes the job
+# to the Whisper pipeline instead of the LLM text train loop.
+dataset:
+  name: "audio"
+
+  primary:
+    name: "PolyAI/minds14"
+    config: "en-US"
+    split: "train[:500]"
+    transcript_col: "english_transcription"
+    audio_col: "audio"
+
+  secondary:
+    name: "mozilla-foundation/common_voice_11_0"
+    config: "en"
+    split: "train[:500]"
+    transcript_col: "sentence"
+    audio_col: "audio"
+
+  sampling_rate: 16000
+  test_size: 0.1
+  num_proc: 4
+
+# ── Audio (Whisper-specific settings) ─────────────────────────────────────────
+audio:
+  language: "English"
+  task: "transcribe"
+
+# ── Training ──────────────────────────────────────────────────────────────────
+training:
+  batch_size: 16
+  grad_accum: 1
+  lr: 1.0e-5
+  warmup_steps: 50
+  max_steps: 400
+  num_epochs: 3
+
+  distributed:
+    strategy: "ddp"
+    ddp:
+      find_unused_parameters: false
+
+# ── PEFT (LoRA on Whisper attention projections) ──────────────────────────────
+peft:
+  method: "lora"
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  tracker: null          # null | "mlflow" | "wandb"
+  project: "bhaskera-audio"
+  run_name: "whisper-asr-ddp"
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+checkpointing:
+  enabled: true
+  save_dir: "./checkpoints/audio"
+  save_interval: 100
+  keep_last_n: 3
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output:
+  dir: "./whisper-finetuned"
+  push_to_hub: false
