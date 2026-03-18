@@ -1,6 +1,0 @@
-{
-  "train_loop_config": {
-    "config_path": "config_audio_mms.yaml",
-    "submit_dir": "/mnt/disk1/Framework/multinode/Bhaskera"
-  }
-}
