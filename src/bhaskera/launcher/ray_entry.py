@@ -21,7 +21,8 @@ Ray init priority:
   everything else      →  local ray.init()
 """
 from __future__ import annotations
-
+import warnings
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 import argparse
 import logging
 import os

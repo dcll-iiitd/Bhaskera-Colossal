@@ -9,6 +9,11 @@ class OpenAssistantDataset(IterableDataset):
         self.ds      = ds
         self.tok     = tokenizer
         self.seq_len = seq_len
+        # Must set pad_token before any padding="max_length" call,
+        # otherwise the tokenizer raises an error on models like LLaMA.
+        if self.tok.pad_token is None:
+            self.tok.pad_token = self.tok.eos_token
+        self.tok.padding_side = "right"
 
     def __iter__(self):
         for row in self.ds:
@@ -24,7 +29,7 @@ class OpenAssistantDataset(IterableDataset):
                 input_ids = enc["input_ids"][0]
                 attn      = enc["attention_mask"][0]
                 labels    = input_ids.clone()
-                labels[attn == 0] = -100
+                labels[attn == 0] = -100   # mask padding tokens
                 yield {
                     "input_ids":      input_ids,
                     "attention_mask": attn,

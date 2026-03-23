@@ -1,23 +1,23 @@
-
+# factory.py — thin wrapper, does NOT import from registry.py
 from transformers import AutoModelForCausalLM
 
 
 def build_model(cfg, device):
-    if cfg.peft == "qlora":
+    if (cfg.PEFT or "").lower() == "qlora":
         from .qlora import build_qlora
-        return build_qlora(cfg.model_name, cfg.lora, device)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            cfg.model_name,
-            torch_dtype=cfg.dtype,
-            attn_implementation=cfg.attn_impl,
-        ).to(device)
+        return build_qlora(cfg, device)
 
-        model.gradient_checkpointing_enable()
-        model.config.use_cache = False
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg.MODEL_NAME,
+        torch_dtype=cfg.DTYPE,
+        attn_implementation=cfg.ATTN_IMPL,
+    ).to(device)
 
-        if cfg.peft == "lora":
-            from .lora import apply_lora
-            model = apply_lora(model, cfg.lora)
+    model.gradient_checkpointing_enable()
+    model.config.use_cache = False
 
-        return model
+    if (cfg.PEFT or "").lower() == "lora":
+        from .lora import apply_lora
+        model = apply_lora(model, cfg.LORA)
+
+    return model

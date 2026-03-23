@@ -5,9 +5,13 @@ from .sharding import shard_streaming_dataset
 
 class SlimPajamaDataset(IterableDataset):
     def __init__(self, ds, tokenizer, seq_len):
-        self.ds = ds
-        self.tok = tokenizer
+        self.ds      = ds
+        self.tok     = tokenizer
         self.seq_len = seq_len
+        # Ensure pad token is set before any padding calls
+        if self.tok.pad_token is None:
+            self.tok.pad_token = self.tok.eos_token
+        self.tok.padding_side = "right"
 
     def __iter__(self):
         for row in self.ds:
@@ -21,10 +25,15 @@ class SlimPajamaDataset(IterableDataset):
                 return_tensors="pt",
             )
 
+            input_ids = out["input_ids"][0]
+            attn      = out["attention_mask"][0]
+            labels    = input_ids.clone()
+            labels[attn == 0] = -100   # mask padding so loss ignores it
+
             yield {
-                "input_ids": out["input_ids"][0],
-                "attention_mask": out["attention_mask"][0],
-                "labels": out["input_ids"][0],
+                "input_ids":      input_ids,
+                "attention_mask": attn,
+                "labels":         labels,
             }
 
 
