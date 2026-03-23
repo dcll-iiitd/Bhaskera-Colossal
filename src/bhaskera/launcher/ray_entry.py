@@ -8,8 +8,7 @@ Ray Train entry point.  Works in three environments:
 
   2. Multi-node WITHOUT SLURM (e.g. bare-metal cluster, Kubernetes)
      Set RAY_ADDRESS=<head>:<port> and start Ray head manually, OR
-     let this script bootstrap a single-node Ray cluster and specify
-     --num-workers to use all local GPUs.
+     let this script bootstrap a single-node Ray cluster.
 
   3. Multi-node WITH SLURM (e.g. Rudra HPC)
      sbatch slurm/submit_ray.sh --config cfg.yaml
@@ -19,10 +18,19 @@ Ray init priority:
   RAY_ADDRESS env var  →  existing cluster
   SLURM multi-node     →  bootstrap head + workers via srun
   everything else      →  local ray.init()
+
+Ray version: requires ray[train] >= 2.10
+  Import changes from older ray:
+    OLD: from ray.air.config import RunConfig, CheckpointConfig
+    NEW: from ray.train import RunConfig, CheckpointConfig
 """
 from __future__ import annotations
+
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+import logging
+logging.getLogger("ray.train.v2.api.callback").setLevel(logging.ERROR)
+logging.getLogger("ray._private.worker").setLevel(logging.ERROR)
 import argparse
 import logging
 import os
@@ -50,10 +58,15 @@ def _wait_for_tcp(host: str, port: int, timeout: int = 120) -> None:
         try:
             with socket.create_connection((host, port), timeout=3):
                 elapsed = time.time() - (deadline - timeout)
-                logger.info(f"  Ray head at {host}:{port} ready (attempt {attempt}, {elapsed:.1f}s)")
+                logger.info(
+                    f"  Ray head at {host}:{port} ready "
+                    f"(attempt {attempt}, {elapsed:.1f}s)"
+                )
                 return
         except OSError:
-            logger.info(f"  Waiting for Ray head {host}:{port} (attempt {attempt})...")
+            logger.info(
+                f"  Waiting for Ray head {host}:{port} (attempt {attempt})..."
+            )
             time.sleep(3)
     raise TimeoutError(
         f"Ray head {host}:{port} not ready within {timeout}s. "
@@ -93,7 +106,9 @@ def _bootstrap_ray_on_slurm(ray_port: int) -> None:
     if redis_pass:
         head_cmd += ["--redis-password", redis_pass]
 
-    logger.info(f"Starting Ray head on {head_node}:{ray_port} ({gpus_per_node} GPUs)")
+    logger.info(
+        f"Starting Ray head on {head_node}:{ray_port} ({gpus_per_node} GPUs)"
+    )
     subprocess.Popen(
         head_cmd,
         stdout=open(f"logs/ray_head_{job_id}.out", "w"),
@@ -127,7 +142,6 @@ def _bootstrap_ray_on_slurm(ray_port: int) -> None:
             stdout=open(f"logs/ray_workers_{job_id}.out", "w"),
             stderr=open(f"logs/ray_workers_{job_id}.err", "w"),
         )
-        # Brief wait for workers to register with head
         logger.info("Waiting 15s for workers to register...")
         time.sleep(15)
 
@@ -147,7 +161,7 @@ def _init_ray(num_workers: int) -> None:
     Priority:
       1. RAY_ADDRESS env var  → connect to existing cluster (any environment)
       2. Multi-node SLURM     → bootstrap head+workers, connect via "auto"
-      3. Everything else      → plain local ray.init() (works anywhere)
+      3. Everything else      → plain local ray.init()
     """
     import ray
 
@@ -160,28 +174,35 @@ def _init_ray(num_workers: int) -> None:
         6379 + int(os.environ.get("SLURM_JOB_ID", 0)) % 1000,
     ))
 
-    existing   = os.environ.get("RAY_ADDRESS")
-    in_slurm   = "SLURM_JOB_ID" in os.environ
-    num_nodes  = int(os.environ.get("SLURM_NNODES", 1))
+    existing  = os.environ.get("RAY_ADDRESS")
+    in_slurm  = "SLURM_JOB_ID" in os.environ
+    num_nodes = int(os.environ.get("SLURM_NNODES", 1))
 
     if existing:
         logger.info(f"Connecting to existing Ray cluster at {existing}")
-        ray.init(address=existing, ignore_reinit_error=True,
-                 logging_level=logging.WARNING)
+        ray.init(
+            address=existing,
+            ignore_reinit_error=True,
+            logging_level=logging.ERROR,
+        )
 
     elif in_slurm and num_nodes > 1:
         _bootstrap_ray_on_slurm(ray_port)
         logger.info("Connecting to Ray cluster via auto-discovery")
-        ray.init(address="auto", ignore_reinit_error=True,
-                 logging_level=logging.WARNING)
+        ray.init(
+            address="auto",
+            ignore_reinit_error=True,
+            logging_level=logging.ERROR,
+        )
 
     else:
-        # Works for: single node with multiple GPUs, laptop, cloud VM, Kubernetes pod
-        logger.info(f"Starting local Ray instance ({num_workers} GPU workers requested)")
+        logger.info(
+            f"Starting local Ray instance ({num_workers} GPU workers requested)"
+        )
         ray.init(
             num_gpus=torch.cuda.device_count(),
             ignore_reinit_error=True,
-            logging_level=logging.WARNING,
+            logging_level=logging.ERROR,
         )
 
     resources    = ray.available_resources()
@@ -234,14 +255,24 @@ def _ray_train_func(train_loop_config: dict) -> None:
 
 def _launch(args: argparse.Namespace) -> None:
     import ray
-    from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
+
+    # Ray >= 2.10: all config classes live in ray.train (not ray.air.config)
+    from ray.train import (
+        CheckpointConfig,
+        FailureConfig,
+        RunConfig,
+        ScalingConfig,
+    )
     from ray.train.torch import TorchConfig, TorchTrainer
 
     num_workers = args.num_workers
 
     _init_ray(num_workers)
 
-    run_name = args.run_name or f"bhaskera_{os.environ.get('SLURM_JOB_ID', 'local')}"
+    run_name = (
+        args.run_name
+        or f"bhaskera_{os.environ.get('SLURM_JOB_ID', 'local')}"
+    )
 
     trainer = TorchTrainer(
         train_loop_per_worker=_ray_train_func,
@@ -276,9 +307,9 @@ def _launch(args: argparse.Namespace) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Bhaskera Ray Train entrypoint")
-    p.add_argument("--config",          required=True,               help="YAML config path")
-    p.add_argument("--num-workers",     type=int, default=1,         help="Number of GPU workers")
-    p.add_argument("--max-failures",    type=int, default=2,         help="Max worker restart attempts")
+    p.add_argument("--config",          required=True,         help="YAML config path")
+    p.add_argument("--num-workers",     type=int, default=1,   help="Number of GPU workers")
+    p.add_argument("--max-failures",    type=int, default=2,   help="Max worker restart attempts")
     p.add_argument("--ray-results-dir", type=str, default="./ray_results")
     p.add_argument("--run-name",        type=str, default=None)
     _launch(p.parse_args())

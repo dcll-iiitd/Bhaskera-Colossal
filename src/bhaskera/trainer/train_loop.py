@@ -2,12 +2,17 @@
 bhaskera.trainer.train_loop
 ============================
 Only rank 0 prints. Clean loss-per-step output, nothing else.
+
+FSDP2 changes:
+  - is_fsdp_model() now delegates to wrapper.py (checks FSDPModule)
+  - clip_grads_fsdp() uses torch.nn.utils.clip_grad_norm_ directly.
+    FSDP2 handles the all-reduce of grad norms internally — the old
+    manual all_reduce + local norm loop was only needed for FSDP1.
 """
 from __future__ import annotations
 
 import math
 import os
-import sys
 from typing import Optional
 
 import torch
@@ -20,14 +25,6 @@ def _p(msg: str, global_rank: int) -> None:
         print(msg, flush=True)
 
 
-def is_fsdp_model(model) -> bool:
-    try:
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        return isinstance(model, FSDP)
-    except Exception:
-        return False
-
-
 def build_warmup_scheduler(optimizer, warmup_steps: int, total_steps: int):
     def lr_lambda(step: int) -> float:
         if warmup_steps > 0 and step < warmup_steps:
@@ -37,18 +34,14 @@ def build_warmup_scheduler(optimizer, warmup_steps: int, total_steps: int):
 
 
 def clip_grads_fsdp(model, max_norm: float = 1.0) -> float:
-    local_sq = torch.tensor(0.0, device="cuda")
-    for p in model.parameters():
-        if p.grad is not None:
-            local_sq += p.grad.detach().float().norm(2) ** 2
-    dist.all_reduce(local_sq, op=dist.ReduceOp.SUM)
-    global_norm = local_sq.sqrt().item()
-    if global_norm > max_norm:
-        coef = max_norm / (global_norm + 1e-6)
-        for p in model.parameters():
-            if p.grad is not None:
-                p.grad.detach().mul_(coef)
-    return global_norm
+    """
+    Gradient clipping for FSDP2.
+
+    With FSDP2 (fully_shard), torch.nn.utils.clip_grad_norm_() works
+    correctly — FSDP2 performs the allreduce of the global grad norm
+    internally. The old manual all_reduce loop was only required for FSDP1.
+    """
+    return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm).item()
 
 
 def _manage_checkpoints(current_path: str, current_loss: float,
@@ -89,7 +82,6 @@ def train(
     from bhaskera.distributed.wrapper import is_fsdp_model, load_checkpoint, save_checkpoint
 
     is_fsdp      = is_fsdp_model(model)
-    strategy     = "FSDP" if is_fsdp else "DDP"
     warmup_steps = getattr(cfg, "WARMUP_STEPS", 20)
     scheduler    = build_warmup_scheduler(optimizer, warmup_steps, max_steps)
 
@@ -140,14 +132,22 @@ def train(
             if micro % grad_accum_steps != 0:
                 continue
 
-            # ── optimizer step ─────────────────────────────────────────────
+            # ── optimizer step ──────────────────────────────────────────────
+            # clip_grads_fsdp works for both FSDP2 and DDP:
+            # - FSDP2: clip_grad_norm_ performs an allreduce internally
+            # - DDP:   clip_grad_norm_ works on local replica (grads already synced)
             if is_fsdp:
                 grad_norm = clip_grads_fsdp(model, 1.0)
             else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), 1.0
+                ).item()
 
             if not math.isfinite(grad_norm):
-                _p(f"  {'':>5}  {step:>6}  {'non-finite grad norm — skipping':>30}", global_rank)
+                _p(
+                    f"  {'':>5}  {step:>6}  {'non-finite grad norm — skipping':>30}",
+                    global_rank,
+                )
                 optimizer.zero_grad(set_to_none=True)
                 micro = 0
                 continue
@@ -161,14 +161,19 @@ def train(
             current_lr  = scheduler.get_last_lr()[0]
 
             _p(
-                f"  {epoch:>5}  {step:>6}  {actual_loss:>9.4f}  {current_lr:>10.2e}  {grad_norm:>8.4f}",
+                f"  {epoch:>5}  {step:>6}  {actual_loss:>9.4f}"
+                f"  {current_lr:>10.2e}  {grad_norm:>8.4f}",
                 global_rank,
             )
 
             if logger_obj and global_rank == 0:
                 logger_obj.log(
-                    {"loss": actual_loss, "lr": current_lr,
-                     "grad_norm": grad_norm, "epoch": epoch},
+                    {
+                        "loss":      actual_loss,
+                        "lr":        current_lr,
+                        "grad_norm": grad_norm,
+                        "epoch":     epoch,
+                    },
                     step=step,
                 )
 
@@ -176,7 +181,9 @@ def train(
 
             if checkpoint_dir and save_interval > 0 and step % save_interval == 0:
                 ckpt_path = os.path.join(checkpoint_dir, f"step_{step:07d}.pt")
-                save_checkpoint(model, optimizer, scheduler, step, cfg, global_rank, ckpt_path)
+                save_checkpoint(
+                    model, optimizer, scheduler, step, cfg, global_rank, ckpt_path
+                )
                 if global_rank == 0:
                     best_checkpoints = _manage_checkpoints(
                         ckpt_path, actual_loss, best_checkpoints, keep_n
@@ -186,7 +193,9 @@ def train(
         # end-of-epoch checkpoint
         if checkpoint_dir:
             ckpt_path = os.path.join(checkpoint_dir, f"epoch_{epoch:03d}.pt")
-            save_checkpoint(model, optimizer, scheduler, step, cfg, global_rank, ckpt_path)
+            save_checkpoint(
+                model, optimizer, scheduler, step, cfg, global_rank, ckpt_path
+            )
             if global_rank == 0:
                 best_checkpoints = _manage_checkpoints(
                     ckpt_path, actual_loss, best_checkpoints, keep_n

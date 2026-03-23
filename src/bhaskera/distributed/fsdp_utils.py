@@ -1,7 +1,17 @@
 """
 bhaskera.distributed.fsdp_utils
 ================================
-FSDP wrapping and activation checkpointing helpers.
+FSDP2 wrapping and activation checkpointing helpers.
+
+Requires: torch >= 2.4  (FSDP2 / fully_shard is stable from 2.4+)
+torch 2.10 (your version) ships FSDP2 fully stable.
+
+Key differences from FSDP1:
+  - Use fully_shard() instead of FSDP(model, ...)
+  - fully_shard() modifies the model IN-PLACE — no wrapper returned
+  - Apply activation checkpointing BEFORE calling fully_shard()
+  - clip_grad_norm_ works directly (no custom all-reduce needed)
+  - MixedPrecisionPolicy replaces MixedPrecision
 """
 from __future__ import annotations
 
@@ -11,56 +21,33 @@ from typing import List, Optional, Set
 
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import (
-    BackwardPrefetch,
-    CPUOffload,
-    FullyShardedDataParallel as FSDP,
-    MixedPrecision,
-    ShardingStrategy,
-    StateDictType,
-)
-from torch.distributed.fsdp.wrap import (
-    size_based_auto_wrap_policy,
-    transformer_auto_wrap_policy,
+
+# FSDP2 imports
+from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    CheckpointImpl,
+    apply_activation_checkpointing,
+    checkpoint_wrapper,
 )
 
 logger = logging.getLogger(__name__)
 
+
 # ── dtype helpers ──────────────────────────────────────────────────────────────
 
 def get_dtype(dtype_str: str) -> torch.dtype:
-    return {"float32": torch.float32, "float16": torch.float16,
-            "bfloat16": torch.bfloat16}.get(dtype_str, torch.float32)
-
-
-def get_sharding_strategy(s: str) -> ShardingStrategy:
     return {
-        "FULL_SHARD":           ShardingStrategy.FULL_SHARD,
-        "SHARD_GRAD_OP":        ShardingStrategy.SHARD_GRAD_OP,
-        "NO_SHARD":             ShardingStrategy.NO_SHARD,
-        "HYBRID_SHARD":         ShardingStrategy.HYBRID_SHARD,
-        "_HYBRID_SHARD_ZERO2":  ShardingStrategy._HYBRID_SHARD_ZERO2,
-    }.get(s, ShardingStrategy.FULL_SHARD)
+        "float32":  torch.float32,
+        "float16":  torch.float16,
+        "bfloat16": torch.bfloat16,
+    }.get(dtype_str, torch.float32)
 
-
-def get_backward_prefetch(s: Optional[str]) -> Optional[BackwardPrefetch]:
-    if not s or s.lower() in ("null", "none"):
-        return None
-    return {"BACKWARD_PRE": BackwardPrefetch.BACKWARD_PRE,
-            "BACKWARD_POST": BackwardPrefetch.BACKWARD_POST}.get(s, BackwardPrefetch.BACKWARD_PRE)
-
-
-def get_state_dict_type(s: str) -> StateDictType:
-    return {
-        "FULL_STATE_DICT":    StateDictType.FULL_STATE_DICT,
-        "SHARDED_STATE_DICT": StateDictType.SHARDED_STATE_DICT,
-        "LOCAL_STATE_DICT":   StateDictType.LOCAL_STATE_DICT,
-    }.get(s, StateDictType.FULL_STATE_DICT)
 
 # ── layer discovery ────────────────────────────────────────────────────────────
 
 def find_transformer_layers(model: torch.nn.Module,
                              names: List[str]) -> Set[type]:
+    """Walk the model and collect the actual classes matching config names."""
     found: Set[type] = set()
     seen:  Set[str]  = set()
     for _, module in model.named_modules():
@@ -68,93 +55,102 @@ def find_transformer_layers(model: torch.nn.Module,
         if cls_name in names and cls_name not in seen:
             found.add(module.__class__)
             seen.add(cls_name)
-            logger.info(f"  FSDP wrap layer: {cls_name}")
+            logger.info(f"  FSDP2 wrap layer found: {cls_name}")
     return found
 
-# ── main wrap function ─────────────────────────────────────────────────────────
 
-def wrap_model_fsdp(model: torch.nn.Module, cfg, device_id: int) -> FSDP:
+# ── activation checkpointing ───────────────────────────────────────────────────
+
+def _apply_activation_checkpointing(model: torch.nn.Module,
+                                     layer_cls_names: List[str]) -> None:
+    """
+    Apply activation (gradient) checkpointing BEFORE fully_shard().
+    This is required by FSDP2 — checkpointing after sharding is unsupported.
+    """
+    layer_classes = find_transformer_layers(model, layer_cls_names)
+    if not layer_classes:
+        logger.warning(
+            "Activation checkpointing: no matching layers found — skipping. "
+            "Check fsdp_transformer_layer_cls in your config."
+        )
+        return
+
+    apply_activation_checkpointing(
+        model,
+        checkpoint_wrapper_fn=partial(
+            checkpoint_wrapper,
+            checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+        ),
+        check_fn=lambda m: isinstance(m, tuple(layer_classes)),
+    )
+    logger.info(
+        f"Activation checkpointing applied to: {[c.__name__ for c in layer_classes]}"
+    )
+
+
+# ── main FSDP2 wrap function ───────────────────────────────────────────────────
+
+def wrap_model_fsdp(model: torch.nn.Module, cfg, device_id: int) -> torch.nn.Module:
+    """
+    Wrap a model with FSDP2 (fully_shard).
+
+    FSDP2 workflow:
+      1. Apply activation checkpointing to each transformer layer (if enabled)
+      2. Call fully_shard() on each transformer layer
+      3. Call fully_shard() on the root model
+
+    The model is modified IN-PLACE. The same object is returned for
+    compatibility with the rest of the codebase, but there is no FSDP
+    wrapper class around it — it's an FSDPModule via __torch_dispatch__.
+    """
     dc = cfg.distributed   # DistributedConfig
 
-    sharding_strategy = get_sharding_strategy(dc.fsdp_sharding_strategy)
-    backward_prefetch = get_backward_prefetch(dc.fsdp_backward_prefetch)
-    cpu_offload       = CPUOffload(offload_params=True) if dc.fsdp_cpu_offload else None
-
-    mixed_precision = MixedPrecision(
+    # Build MixedPrecisionPolicy (FSDP2 style)
+    mp_policy = MixedPrecisionPolicy(
         param_dtype=get_dtype(dc.fsdp_mixed_precision_param),
         reduce_dtype=get_dtype(dc.fsdp_mixed_precision_reduce),
-        buffer_dtype=get_dtype(dc.fsdp_mixed_precision_buffer),
+        # output_dtype is optional; buffer_dtype is not a separate field in FSDP2
     )
 
-    # Build auto-wrap policy
-    if dc.fsdp_auto_wrap_policy == "transformer_auto_wrap":
-        layer_classes = find_transformer_layers(model, dc.fsdp_transformer_layer_cls)
-        if layer_classes:
-            auto_wrap_policy = partial(
-                transformer_auto_wrap_policy,
-                transformer_layer_cls=layer_classes,
-            )
-        else:
-            logger.warning(
-                "No transformer layers matched config names. "
-                "Falling back to size-based auto wrap (min 100M params)."
-            )
-            auto_wrap_policy = partial(
-                size_based_auto_wrap_policy,
-                min_num_params=int(dc.fsdp_min_num_params),
-            )
-    else:
-        auto_wrap_policy = partial(
-            size_based_auto_wrap_policy,
-            min_num_params=int(dc.fsdp_min_num_params),
+    # CPU offload in FSDP2
+    cpu_offload = None
+    if dc.fsdp_cpu_offload:
+        from torch.distributed._composable.fsdp import CPUOffloadPolicy
+        cpu_offload = CPUOffloadPolicy()
+        logger.info("FSDP2 | CPU offload enabled")
+
+    # Discover transformer layer classes
+    layer_classes = find_transformer_layers(model, dc.fsdp_transformer_layer_cls)
+
+    if not layer_classes:
+        logger.warning(
+            "No transformer layers matched config names. "
+            "The root model will be sharded as a single unit. "
+            "This works but is less memory-efficient than per-layer sharding."
         )
+
+    # Step 1 — Activation checkpointing (must happen BEFORE fully_shard)
+    if dc.fsdp_activation_checkpointing:
+        _apply_activation_checkpointing(model, dc.fsdp_transformer_layer_cls)
+
+    # Step 2 — Shard each transformer layer individually
+    fsdp_kwargs: dict = {"mp_policy": mp_policy}
+    if cpu_offload is not None:
+        fsdp_kwargs["offload_policy"] = cpu_offload
+
+    for module in model.modules():
+        if layer_classes and isinstance(module, tuple(layer_classes)):
+            fully_shard(module, **fsdp_kwargs)
+
+    # Step 3 — Shard the root model
+    fully_shard(model, **fsdp_kwargs)
 
     logger.info(
-        f"FSDP | shard={dc.fsdp_sharding_strategy} "
+        f"FSDP2 | shard=FULL_SHARD "
         f"mixed_prec={dc.fsdp_mixed_precision_param} "
         f"cpu_offload={dc.fsdp_cpu_offload} "
-        f"act_ckpt={dc.fsdp_activation_checkpointing}"
+        f"act_ckpt={dc.fsdp_activation_checkpointing} "
+        f"layers_sharded={[c.__name__ for c in layer_classes]}"
     )
 
-    fsdp_model = FSDP(
-        model,
-        sharding_strategy=sharding_strategy,
-        auto_wrap_policy=auto_wrap_policy,
-        mixed_precision=mixed_precision,
-        cpu_offload=cpu_offload,
-        backward_prefetch=backward_prefetch,
-        forward_prefetch=dc.fsdp_forward_prefetch,
-        device_id=device_id,        # moves each shard CPU→GPU during init
-        limit_all_gathers=True,
-        use_orig_params=True,       # required for LoRA params to be seen by optimizer
-    )
-
-    if dc.fsdp_activation_checkpointing:
-        _apply_activation_checkpointing(fsdp_model, dc.fsdp_transformer_layer_cls)
-
-    return fsdp_model
-
-
-def _apply_activation_checkpointing(fsdp_model: FSDP, layer_cls_names: List[str]):
-    try:
-        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-            CheckpointImpl,
-            apply_activation_checkpointing,
-            checkpoint_wrapper,
-        )
-        layer_classes = find_transformer_layers(fsdp_model, layer_cls_names)
-        if not layer_classes:
-            logger.warning("Activation checkpointing: no matching layers found, skipping.")
-            return
-
-        apply_activation_checkpointing(
-            fsdp_model,
-            checkpoint_wrapper_fn=partial(
-                checkpoint_wrapper,
-                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-            ),
-            check_fn=lambda m: isinstance(m, tuple(layer_classes)),
-        )
-        logger.info(f"Activation checkpointing applied to: {[c.__name__ for c in layer_classes]}")
-    except Exception as e:
-        logger.warning(f"Activation checkpointing failed (non-fatal): {e}")
+    return model

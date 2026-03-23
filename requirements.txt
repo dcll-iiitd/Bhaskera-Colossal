@@ -70,7 +70,10 @@ pydantic-core==2.41.5
 python-dateutil==2.9.0.post0
 pytz==2025.2
 pyyaml==6.0.3
-ray==2.7.0
+# Ray pinned to >=2.10 for stable ray.train imports (CheckpointConfig, RunConfig, etc.)
+# Do NOT use ray==2.7.0 — CheckpointConfig lived in ray.air.config in older versions
+# and will cause ImportError with this codebase.
+ray[train]>=2.10,<3.0
 referencing==0.37.0
 regex==2026.1.15
 requests==2.32.5
