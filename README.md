@@ -46,7 +46,7 @@ Bhaskera/
 ```bash
 git clone <repo-url>
 cd Bhaskera
-bash setup.sh
+source setup.sh
 ```
 
 This creates a `.venv`, installs all dependencies, and installs the package in editable mode.
